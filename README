@@ -1,0 +1,367 @@
+# wrench README, updated for v1.31
+
+--
+
+SUMMARY
+
+wrench is a srcds (Source Dedicated Server) management tool for Valve's srcds games, which includes Team Fortress 2, the various Counter Strike releases, Half-Life 2: Deathmatch, Left 4 Dead, and more.
+
+wrench is written in bash (v4) for command-line use. It enables the user to easily install, start, stop, update, maintain, manage, and uninstall srcds installations.
+
+This README file was written to provide an overview of what wrench can do, how it works, and how to use it.
+
+--
+
+FEATURES AND THEORY OF OPERATION
+
+wrench is easy to use, but isn't for dummies. It will make managing srcds installations easier, but won't solve every problem you might encounter.
+
+Notable features which set wrench apart from other management scripts:
+	wrench takes care of your installations from first-time setup, to installation, startup, updates, stops, reconfiguration, and uninstallation.
+	wrench was designed for maintaining multiple srcds installations on a single host.
+	Mandatory symbolically linked installations. All servers are linked servers.
+	Linked installations use a "master" installation as their reference.
+	For each game type, you only need to download updates once, instead of N* the number of servers you have installed.
+	New installations take seconds to create once a master has been installed, because nothing needs to be downloaded.
+	Linked installations require dramatically less filesystem space than standard installations and are easier to backup and move around.
+	Automatic update management of each installation, including warning users and restarting each installation after an autoupdate.
+	wrench uses tmux as a terminal multiplexer instead of screen.
+	wrench can start and stop all of your srcds installations in a single command.
+	wrench keeps configuration about each game type and server installation in a tiny SQLite database.
+	wrench has an autocleanup function to clean up old replay files, logs, download cache, and more.
+	wrench includes a srcds_run replacement called wrench_run mode.
+	wrench_run features crash notifications by email, automatic crash restarts, and a watchdog process which will restart hung/frozen servers.
+	wrench_run will automatically stop a server if it crashes too much, to protect your host from runaway crash-restarts.
+
+
+
+Executing wrench with the "help" argument will display the following helpful info:
+
+wrench is a Source Dedicated Server (srcds) management tool for Valve's srcds-based game servers.
+
+For more information, including full documentation, go here: 
+  http://forums.srcds.com/viewpost/118741
+
+Single-argument commands:
+  wrench install
+  wrench uninstall
+  wrench list
+  wrench listplayers
+  wrench autocleanup
+  wrench autoupdate
+  wrench bootstart
+  wrench stopall
+  wrench setup
+
+Server-specific commands:
+  wrench start MyTarget
+  wrench stop MyTarget
+  wrench stopnow MyTarget
+  wrench restart MyTarget
+  wrench restartnow MyTarget
+  wrench console MyTarget
+  wrench status MyTarget
+  wrench showconfig MyTarget
+  wrench reconfig MyTarget
+  wrench rename MyTarget
+  wrench relink MyTarget
+  wrench delink MyTarget
+  wrench lockdown-master MyTarget
+  wrench unlock-master MyTarget
+  wrench update MyTarget
+  wrench updatenow MyTarget
+  wrench update-validate MyTarget
+  wrench update-validatenow MyTarget
+  wrench gametype MyTarget
+
+
+
+The primary features which makes wrench different are symlinks, tmux, sqlite DBs, autoupdates, autocleanup, and wrench_run. Let's review each of these features, because understanding them is critical to understanding wrench.
+
+For each srcds installation which will host players, there is a single "master". The master installation is a real installation as created and updated from Valve's SteamCMD. Each "linked" installation holds the localized configuration, log files, download cache, custom map files, and other customizations. These linked installations are symbolically linked to a master installation.
+
+There are no "standalone" installations in wrench. All installations are either a "master" type, or a "linked" type.
+
+For each game type (TF2, CSS, L4D) there is only one master installation. It is not possible to have multiple master installations for a game type.
+
+By default, the master installations stay in a freshly-installed, unmolested state, unchanged by any local configuration. While it is possible to customize the master installation, this is discouraged as it will affect all possible linked installations of that game type. We even go so far as to "lockdown" the file permissions of each master installation as to prevent accidental file modification. Each master installation can be locked down by using the "lockdown-master" argument, or unlocked for writing with the "unlock-master" argument. Normally, the only time a master installation is unlocked is when it is being updated.
+
+Since all linked installations use a single master as their reference, each game type update only needs to be downloaded once. This saves filesystem space, bandwidth, and time. It also makes backing up and transferring linked installations fast and easy, since they are significantly smaller than a conventional installation. Installing a new installation can literally take less than a second, because only symlinks are created for it.
+
+Installation of a master install happens automatically upon the installation of your first linked install of a particular game type. wrench will automatically discover that it needs to download a master for the new srcds you are trying to install and will download it when needed.
+
+In each linked install, you will add your own custom files, such as your motd, autoexec.cfg, server.cfg, addons/mods, and custom maps. If you need to modify a file which is a link to the master installation, simply delete the link to the master for that particular file, copy the real file from the master into your linked installation, and modify it there. Future updates will not change the file, so you don't have to worry about the updater clobbering it.
+
+While many other srcds management script use screen as their terminal multiplexer, wrench uses tmux. Tmux offers a number of advantages to us. Notably, tmux works with sudo, while screen violently flips chairs. This means you can, optionally, use wrench with sudo. The author of wrench generally considers tmux a superior modern replacement to screen, though I respect screen a great tool, and acknowledge that tmux has a few missing features which screen has (logging and attaching to serial ports). Other than the aforementioned differences, the use of tmux is not significant to wrench's features.
+
+wrench uses sqlite as a database to keep configuration for each game type (srcinfo) and installation (inst). Specifically, sqlite3 is used, though sqlite2 is likely to also be compatible (but has not been tested). sqlite uses a tiny database file in the wrench installations directory usually named "wrench.db". This database has two tables; "srcinfo", which holds the game type information for each srcds game type, and "inst" which holds the information for each individual master and linked installation.
+
+The database "srcinfo" table contains information for each game type (GAMETYPE), including it's name, the updater (SteamCMD vs HLDSUpdateTool), the server AppID, Client AppID, relative location of the steam.inf file, where the startup binaries can be found, and installation defaults (INSTDEF_) for each new installation of that type.
+
+The database "inst" table holds information for each installation, master and linked, including; the IP address to use, various network sockets/ports, if the installation is allowed to be started, updated, automatically cleaned, should be started at boot time, the startup binary (allowing custom start binaries to be used), and the startup binary command arguments.
+
+Normally, a user should not need to interface with the database directly. The "install", "showconfig", "reconfig", and "rename" command arguments should take care of most tasks.
+
+Typically, the configuration for a new game type is entered once during the installation of a new server. However, if the game type (srcinfo) configuration needs to be changed or removed, the "gametype" command exists to do so. The "gametype" argument accepts "add", "change", and "delete". With this option, you can add, change, and delete game type configuration.
+
+wrench has a built-in system for automatically updating installations when Steam releases an update for each game type. This autoupdate system will automatically detect when a new update has been released, notify the user via email of the update (including a log), warn in-game users of the update, stop only the affected installation types, update the master, relink all linked installations, and restart those which were running at the time the update started. Unless an update breaks something in the configuration or addons/mods, zero user intervention is required.
+
+wrench has built-in functionality to automatically clean up srcds installations. srcds isn't very good at cleaning up after itself, so wrench helps out by automatically rotating log files, compressing them, deleting them after a set period of time, cleaning up download cache directories (spray files), cleaning up old replay files, and more. This cleanup process is customized for each game type, and can be enabled or disabled on an individual linked installation basis. Master installations don't need to be cleaned up since they never actually run.
+
+wrench has a build in replacement for the srcds_run startup script which offers a number of feature enhancements. When "wrench" is used as the startup binary (STARTBIN), srcds_run is ignored and wrench itself spawns a new process which manages the startup binary (usually srcds_linux). wrench_run sends a notification email if a server process crashes and will automatically restart the process after dumping the console text output to a file so that you can review it later. wrench_run also includes a watchdog process which polls the server. If the server fails to reply to too many tests, the watchdog automatically kills it and a new process is started. If the server crashes too much, wrench_run will shut it down to protect against unending runaway crashes.
+
+--
+
+LIMITATIONS
+
+wrench is fairly easy to use, but it can't fix stupid. The easier a tool is to use, the dumber the user base will often be. A significant amount of error checking and problem resolution has been included in wrench, but some dummy some where is going to stab themselves twenty-three times with it, feed it to their kids, and/or stick it in an orifice where it doesn't belong, then blame the author for their woes. wrench is unfit for any purpose, and no warranties, explicit or implied, are provided.
+
+wrench is a command-line only tool. There is no pointy-clicky web interface. If you are not comfortable working on a command line over ssh, then wrench isn't for you.
+
+Linked installations have a drawback for which wrench does not yet account, because it has never yet been a problem. If the master installation includes a file which the user does not wish to exist in a linked installation, the user must delete the linked file in each linked installation every time the master installation is updated. This is because the relinking process overlays links on the linked installation from the master after every update to account for the possibility of added or removed files from the master installation. Optionally, if a blank file will do, the user can delete the link and install a blank file in it's place. Ultimately, if this becomes a problem, it is possible to create a blacklist file for each linked installation which will delete links after the relink process. If you wish for this file blacklist process to be implemented, please contact the author of wrench. An overlay filesystem would be a perfect solution for this issue.
+
+wrench previously supported Valve's HLDSUpdateTool, though it no longer does since Valve depreciated it. Some code related to this may still exist in wrench.
+
+wrench is written in bash v4-type script and uses a number of bash-isms and Linux-specific commands. wrench probably won't work on BSD and OSX without localized fixes.
+
+Bash is not a good language for a tool of this complexity. wrench was specifically written in bash for the educational reasons of the author, not because it was the right language to use. As a result, all the good and bad that comes along with bash is present in wrench. wrench is easy to modify and read since it's in bash, but bash is inefficient and lacks a lot of programming features which other languages provide.
+
+wrench uses a few custom binary tools which are often not found in most GNU/Linux distributions. The user will need to download and install them directly into their PATH somewhere. This is a minor inconvenience and the user will only need to install these tools once. This includes the "lns" tool, and "qstat". Please see the INSTALLATION section of this document for more information.
+
+wrench is not multi-user safe. It is intended to be used by a single user account. Though it is possible to use sudo by multiple users to manage the wrench-using user, this isn't recommended due to security concerns. sqlite does not have a built-in user account system like most SQL database servers. It should be noted that wrench was derived from a separate multi-user control system and may contain some related artifacts in it's code.
+
+While wrench has no known compatibility issues with addons/mods, it also generally does not have any built-in support for them. SourceMod and other mods will need to be updated and otherwise maintained independently.
+
+wrench tries to do a lot of things. Probably too many things. Chances are pretty good that it won't do them all well.
+
+--
+
+CONFIGURATION PARAMETERS 
+
+wrench uses a number of common parameters (variables) and understanding them is important.
+
+Most users will only need to know and work with a very few of these parameters, and they have been put near the top of the script for easy modification. Most of these parameters have sane defaults, and you probably won't need to make any modifications to them.
+
+Below are listed the most common parameters and their default values, which may need to be modified by the user.
+
+APPDIR=~/srcds
+
+APPDIR is the Application Directory where wrench keeps it's srcds masters, linked installations, and it's database. Some users might want to use "/srv/srcds" instead.
+
+SQLDBFILE=$APPDIR/wrench.db
+
+SQLDBFILE is the SQLite database file location. Usually, this will be at "~/srcds/wrench.db".
+
+STEAMCMD_BIN=~/bin/steamcmd/steamcmd.sh
+
+STEAMCMD_BIN is the file path to where the SteamCMD command can be found. I usually keep the steamcmd directory under my user's ~/bin directory, though many users may keep it in "~/steamcmd" instead. IMPORTANT: SteamCMD is NOT multi-user safe. It should never be kept outside of your user home directory. Never install SteamCMD in /usr/local. Never share SteamCMD installations between users.
+
+WRENCH_MAILTO="user@domain.com"
+
+WRENCH_MAILTO is the default email address for notifications. It should be noted that each individual installation also may have it's own email address in the database which will override the default address if present, and if the operation is specific to that installation. Some global operations, such as autoupdate, will only use the global MAILTO address.
+
+HIPCHAT_ROOM is the room id you use to sent notification towards, same practice as mail notifications, you can get your room id from https://<yourdomain>.hipchat.com/admin/rooms and clicking on the room in question to see the id (called API ID)
+
+HIPCHAT_TOKEN this is the token specific for that room, again visit https://<yourdomain>.hipchat.com/admin/rooms/tokens/<your room id> and click on tokens. A "Send notification" token is all you need.
+
+REPLAY_ENABLED=1
+REPLAYBASEDIR=/var/www/srcds-replays
+
+REPLAY_ENABLED and REPLAYBASEDIR control if replay is enabled locally and where the web server public replay directory is located. If you don't use replay, set REPLAY_ENABLED=0. wrench automatically created a replay web directory for each installation, includes it as part of the cleanup process, and will remove it during uninstall.
+
+The above mentioned parameters are the most common to which require user customization during initial install.
+
+Below we will discuss additional variables, including those which are stored in the database. Each variable is either stored in the srcinfo table, the inst table, or is set within wrench. If the parameter is set via the database, the table name is noted in parenthesis.
+
+Note that for all parameters which are stored in the database by means of the "install" and "reconfig" commands, values are sanitized and checked for validity to protect both the user and the database itself.
+
+INSTALLID (inst) is the identifying name of each installation. It is also the name of the directory for each installation, under $APPDIR. The INSTALLID will always have an identifying prefix of it's GAMETYPE. For example, a TF2 installation might be named "tf2-MyServer".
+
+GAMETYPE (inst and srcinfo, this is where SQL joins occur) is an abbreviated name for each game type, as defined by the author of wrench. This is somewhat similar to Valve's HLDSID, but it is not the same. The GAMTYPE for Team Fortress 2 is "tf2", and CS:GO is "csgo".
+
+INSTTYPE (inst) is the Installation Type, which can either be "linked" or "master".
+
+IPADDR (inst) is the assigned IP address which each server will use. Set to "0.0.0.0" to bind to all addresses on the local host.
+
+CLIENTPORT (inst) is the assigned Client Port, and is usually specified on the startup command line with +clientport.
+
+HOSTPORT (inst) is the assigned Host Port, and is usually specified on the startup command line with +hostport.
+
+TVPORT (inst) is the assigned Source TV Port, and is usually specified on the startup command line with +tv_port.
+
+STEAMPORT (inst) is the assigned Steam Port, and is usually specified on the startup command line with -steamport.
+
+GAMENAME (srcinfo) is the Game Name, which is the fully qualified text name for each game type. For example, the GAMETYPE "tf2" has a GAMENAME of "Team Fortress 2".
+
+GAMEARG (srcinfo) is the value passed to the "-game" argument for srcds_linux. In most cases, this is also the same as HLDSID, but not always. For example, some moron at Valve decided to make the HLDSID for css/cstrike to be "Counter-Strike Source", for reasons only they and potatoes understand. This column was added to the DB in wrench release version 1.8.
+
+UPDATER (srcinfo) is the field which indicated which updater type a particular GAMETYPE uses. Currently only SteamCMD is supported, but HLDSUpdateTool was also supported in the past.
+
+HLDSID (srcinfo) is the HLDS ID, which HLDSUpdateTool used to specify the game type. This field is no longer relevant since HLDSUpdateTool has been depreciated, but the information is maintained in the database for possible future reference. Valve internally seems to refer to this as the "depot name". Most of the time, this is also the game as GAMEARG, but not always (examples: cstrike and dod). HLDSID is depreciated and you should never use it. It will be removed in a future version of wrench.
+
+SERVER_APPID (srcinfo) is the Server AppID as specified by Valve. Used for updating.
+
+CLIENT_APPID (srcinfo) is the Client AppID as specified by Valve. Used for updating.
+
+BINDIRSUBD (srcinfo) is the Binary Directory Subdirectory. This is the location where binary application files, such as srcds_linux and srcds_run, are found relative to each installation's root directory. Since the SteamPipe/SteamCMD conversion, Valve has placed these files in the root of the installation for nearly all of their games. Previously, these files would have been found in a subdirectory. Thus, this field is mostly blank, indicating that these files are found in the root of the installation for each type.
+
+STEAMINF (srcinfo) is the relative path to the steam.inf file for each installation type. Valve is not always consistent in where they keep this file located.
+
+STEAMINF_FILE is the fully qualified path to an installation's steam.inf file, and is specific to each installation. This parameter is usually made up as "$APPDIR/$INSTALLID/$STEAMINF".
+
+ALLOWUPDATE (inst) is a binary indicator to allow the installation to be updated/relinked or not. 1=allowed, 0=not allowed.
+
+ALLOWSTART (inst) is a binary indicator to allow the installation to be started or not. 1=allowed, 0=not allowed.
+
+BOOTSTART (inst) is a binary indicator to allow the installation to be started via the "bootstart" command. 1=allowed, 0=not allowed.
+
+AUTOCLEANUP (inst) is a binary indicator to allow the installation to be automatically cleaned by the "autoclean" command or not. 1=allowed, 0=not allowed.
+
+MAILNOTIFY (inst) is a binary indicator to allow notifications for the installation to be sent via email or not. 1=allowed, 0=not allowed. Only certain specific actions will cause a mail notification to be sent, such as starts, stops, restarts, and crashes. Relinking and reconfiguring an installation does not generate a notification.
+
+HIPCHATNOTIFY (inst) is a binary indicator to allow notifications for the installation to be sent via hipchat or not. 1=allowed, 0=not allowed. Same actions as MAILNOTIFY.
+
+MAILTO (inst) is the email address to which notifications will be sent for a specific installation. If this field is blank, the global WRENCH_MAILTO parameter value will be used instead.
+
+RECOVER_CRASH_ENABLE (inst) is a feature of wrench_run which enables automatic crash recovery if the srcds_linux process exits abnormally. If you turn it off, you will still be notified when a server crashes and dies, but it won't automatically restart. 1=enabled, 0=disabled.
+
+RECOVER_WATCHDOG_ENABLE (inst) is a feature of wrench_run which enables the watchdog process to monitor for a hung/frozen/seized/spinlocked server. This is where the server process has not quit, but it has stopped responding to network requests. Note that RECOVER_CRASH_ENABLE must be enabled for this feature to operate. 1=enabled, 0=disabled.
+
+RECOVER_WATCHDOG_TEST_INTERVAL (inst) sets the time interval, in seconds, between watchdog polling of the running installation. This number should probably be somewhere between 1 and 120. The default is currently 10.
+
+RECOVER_WATCHDOG_POLL_MAX (inst) is the maximum number of watchdog poll failures that can occur before the watchdog kills the hung server process so that a new one can be started. This should probably be a number between 3 and 10. The default is 6.
+
+RECOVER_WATCHDOG_START_WAIT (inst) is the number of seconds the watchdog should sleep before monitoring a newly started server process. We don't want to pester the server too soon when it is first starting up. The default is 60.
+
+RECOVER_SLEEP (inst) is the number of seconds we sleep after a crash has occurred, and before we start a new server process to replace it. The default is 10.
+
+LOCKFILE is a fully qualified path to a file which indicates a lock for a particular installation. This is used during updating and some other commands. It is not used to indicate if a server is running or not, as that is what PIDFILE is for.
+
+PIDFILE is a fully qualified path to a file which indicates that a srcds is running. The contents of the file is the Process ID for that server, as written by the srcds via the "-pidfile" command argument. As this file is necessary to the operation of wrench, "-pidfile" is must be specified within $STARTBINARGS and is passed to the $STARTBIN when each installation is started. This file is named "server.pid" by default, and if this file is present in a srcds installation directory, you can assume that the server is actively running.
+
+BINDIR is the the fully qualified Binary Directory, where the startup command can be found, which is usually "srcds_run". BINDIR is usually defined as "$APPDIR/$INSTALLID/$BINDIRSUBD".
+
+STARTBIN (inst) is the Startup Binary filename. If you use Valve's default startup binary, this will be "srcds_run". The default is "wrench", which means wrench will use it's built-in wrench_run mode. This also allows you the option to use an alternative binary/script to start your srcds with.
+
+STARTBINARGS (inst) is a very special parameter, and understanding it's use is of vital importance. This parameter is stored in the inst table for each installation, and specifies the command line options which will be passed to the STARTBIN command and then on to srcds_linux. This parameter will include options such as -game, -ip, the various +/- port commands, -strictportbind, -pidfile, -maxplayers, +map, and more. In order to build this argument to the STARTBIN, it is evaluated by wrench an BASH variables in the form of "$VAR" are expanded to their values. This allows the user to use values contained in the database, such as the IP and PORT fields, to be automatically filled in. For example if an installation has it's database "IPADDR" field set to "10.0.0.9", "CLIENTPORT" set to "27015", and STARTBINARGS holds a value of "-game tf -ip $IPADDR +clientport $CLIENTPORT", this field will evaluate to "-game tf -ip 10.0.0.9 +clientport 27015" when the server is actually started. Note that this field can not contain certain special characters, such as the following: &;'"?<>{}[]()*!. If such characters are provided as input, they will be silently deleted. Do not attempt to escape or quote characters when configuring this field.
+
+--
+
+INSTALLATION
+
+In order to use wrench, the user must perform a few initial setup steps. This includes installing dependency applications, dependency libraries, installing SteamCMD, configuring the default variables, and modifying the host system where necessary.
+
+The author of wrench considers it a feature that certain requirements need to be met by the user before wrench will work. If you can't handle installing a few tools, files, and configuring your own host system on your own, you are over your head and I don't want you using wrench and then blaming others for your own incapability. If you can't handle UNIX 101, this isn't for you.
+
+It is recommended that wrench be placed in your user's ~/bin directory. It's also safe to put it in /usr/local/bin but make sure appropriate permissions are set if you do.
+
+Running the "wrench setup" command will walk the user through most of these steps.
+
+wrench comes with a bash autocompletion script, "wrench.bash-autocompletion". This script will help your bash shell auto-complete commands by using the tab key. Source this file in some way from your profile. Some distributions will also automatically load this if you place it into your "~/.bash_completion" file. If that' not the case for you, add "source ~/.bash_completion" to your login script/.profile. This step is not required, but highly recommended.
+
+wrench expects SteamCMD to be installed and configured via it's "STEAMCMD_BIN" variable. By default, this is set to "STEAMCMD_BIN=~/bin/steamcmd/steamcmd.sh", but can be changed as the user needs.
+
+"setup" will prompt you to automatically install SteamCMD if not found.
+
+If necessary, you can read more about SteamCMD here:
+https://developer.valvesoftware.com/wiki/SteamCMD
+
+wrench has a built-in dependency checker system as part of it's "setup" command. Running this command will show the user which tools are missing from the system. Most of these tools can be installed via your local GNU/Linux installation package management tool set, such as apt/dpkg, yum, pkg, etc.
+
+On a Debian GNU/Linux host, the following command should take care of installing most dependencies:
+
+# apt-get install lib32gcc1 lib32ncurses5 lib32tinfo5 coreutils util-linux procps xmlstarlet wget tmux sqlite3 symlinks sed lsof findutils gawk
+
+lib32gcc1 is a requirement of SteamCMD and most srcds games when running on 64bit Linux.
+
+lib32ncurses5 and lib32tinfo5 are required by TF2 as of 7 Aug 2014, version 2351233, and will likely be required by other servers in the future.
+
+Obviously, if you are not a bash shell user, you will need to install a modern (v4) version of the bash shell as well.
+
+Additionally, "lns" and "qstat" are not available to most distributions and must be downloaded and installed separately. It is recommended to install lns and qstat in the user's ~/bin directory, but it's also safe to put them in /usr/local/bin. Make sure these tools are included in the user's PATH.
+
+lns is the linking tool used to create the symlink structure for each linked install.
+
+There is pre-compiled binary for lns in this tarball:
+http://www.chiark.greenend.org.uk/~sgtatham/utils/lns.tar.gz
+
+Source code is available for lns as well. Thanks to Simon Tatham, who made this tool.
+http://www.chiark.greenend.org.uk/~sgtatham/utils/
+
+qstat can be downloaded here:
+http://sourceforge.net/projects/qstat/
+
+Note that Debian and some Debian-based distributions offer a "qstat" package for download. If desired, the user may install this package instead of downloading qstat manually. In this case, the usage command is "quakestat" instead of "qstat".
+
+wrench can optionally use nice/renice to raise the priority on running srcds installations if the user has permissions via limits.conf. It would be a really good idea to configure /etc/security/limits.conf to allow the wrench user to renice processes with a higher priority (10 is good). This is not a requirement, however.
+
+For the autoupdate and autocleanup features to work, the user must add an entry to their cron tab. Examples have been listed below, where autoupdate will be run every five minutes, and autocleanup will be run each day at 0500 local time:
+
+*/5 * * * *       ~/bin/wrench autoupdate 1> /dev/null
+0 5 * * *       ~/bin/wrench autocleanup 1> /dev/null
+
+Additionally, the user may wish to start their installations at system boot by using cron's "@reboot" command like so:
+
+@reboot        ~/bin/wrench bootstart
+
+Be sure to "stopall" of your srcds installations when rebooting or shutting down your host system.
+
+wrench sends email notifications on events. Be sure to configure your host to send email via a local MTA, or a remote mail router/smarthost.
+
+Finally, remember to configure your firewall as appropriate.
+
+After all requirements have been met, install your first srcds with the "install" command, add some config files, and "start" it! Then use the "list" command to show all of your installed servers, "listplayers" to see who is playing, "status" to see the status of the running installation, and finally "stop" it.
+
+Please notify the author of wrench if any dependencies were missed in this list, or you can offer improvements to this set of instructions.
+
+--
+
+REPLAY
+
+wrench has a number of features which support Valve's Replay feature, which is currently only supported on TF2. This includes the automatic creation of replay directories for each srcds installation for a local web server, the renaming and removal of existing web server replay directories when necessary, and automatic cleanup of old replay files in both the srcds installation and it's local web server directory.
+
+If you don't want to use replay at all, set REPLAY_ENABLED=0 in the wrench script to disable these features globally.
+
+The defaults are REPLAY_ENABLE=1, and REPLAYBASEDIR=/var/www/srcds-replays. Change these as necessary.
+
+Remember to set "-replay" in your installation STARTUP_ARGS during configuration, and to configure either replay.cfg or autoexec.cfg with your replay configuration.
+
+--
+
+MISCELLANEOUS NOTES
+
+tmux previously had a serious redirection bug which can cause wrench to break badly. Make sure you have tmux version of 1.6 or greater.
+
+The "lockdown-master" command, in addition to removing file and directory write permissions on a master install, also sets sane executable permissions. All executable permissions are removed from files, except for a few specific files, such as srcds_run and srcds_linux.
+
+The "relink" command automatically removes the 40-character directory which is included in each master installation. These 40-character directories are probably a SHA1 hash, and are used by SteamCMD, but they have no relevance to linked installations, so their links are removed.
+
+tmux sessions are named after the INSTALLID for each installation. Since each installation requires a prefix of the GAMETYPE, followed by the unique installation name, this should be unique enough to prevent any conflicts with existing tmux user sessions.
+
+qstat is used by the "listplayers" and "status" commands to show players. It is also used by the watchdog process to monitor each server, if enabled.
+
+There are numerous "now" commands, including "stopnow", "restartnow", "updatenow", and "update-validatenow". Normally, wrench gives in-game players warning of the impending shutdown (default 10 seconds of warnings) by using the "say" and "sm_csay" commands. If a "now" command is used, the srcds installation skips this warning process and the installation is shut down immediately. This makes shutting down each installation faster, hence the "now".
+
+The difference between the GAMETYPE, GAMEARG, and HLDSID values in database srcinfo table may be confusing. GAMETYPE is an arbitrary value created by the author of wrench to logically and consistently identify each game type. This was necessary because Valve's different srcds games are inconsistent between GAMEARG and the HLDSID. GAMEARG is the value passed to the "-game" argument for srcds_linux. HLDSID is usually the same as GAMEARG, but not always. HLDSID was the value given to the old and depreciated HLDSUpdateTool.
+
+As of version 1.10 (20140606), the application was renamed from "wrench.sh" to "wrench". You can name wrench to whatever you want, just remember to update dependencies: Your crontabs, the STARTBIN field in each installations inst database table, et-cetera.
+
+There are a number of different ways to stop a running server which are acceptable. Of course, you can use wrench itself with the "stop" or "stopnow" command, but you can also type "quit" on the console and everything will clean itself up. You can also send a TERM signal with the kill command. Never ever send a kill -9 (SIGKILL) unless you know what you are doing.
+
+The REPLAYPORT parameter has been removed from wrench as of version 1.25 (20150406). It was the Replay Port (+replay_port) used by TF2, which was depreciated by Valve.
+
+--
+
+WRENCH ON CENTOS
+
+While it is possible to get wrench working on Centos 6.5, there is a serious issue that I can't work around. The tmux version that comes with CentOS 6.x is way too old. If you wish to use wrench on CentOS 6.5 or older, you must upgrade tmux to at least version 1.6.
+
+CentOS 7 was released on June 10th 2014, which includes tmux version 1.8. wrench should work fine on CentOS 7.
+
+You may not find tmux or xmlstarlet in the default repositories. Add the RPMForge/EPEL/whatever repositories to your system and then do:
+	yum install tmux xmlstarlet symlinks
+
+--
+
+Contributors: Snelvuur (http://steamcommunity.com/id/snelvuur)
+Original Author: Jmomo (http://steamcommunity.com/id/jmomo)
