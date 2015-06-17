@@ -16,8 +16,8 @@ SRCDS_LINUX="srcds_linux"
 WRENCH_MAILTO="contact@lethal.zone" # The default MAILTO address, mostly needed for autoupdate notifications.
 REPLAY_ENABLED=1 # Disable replay related features by setting this 0.
 REPLAYBASEDIR=/var/www/srcds-replays # The web server replay base directory.
-HIPCHAT_ROOM=<room number>
-HIPCHAT_TOKEN=<token for room> # get it from https://<yourname>.hipchat.com/rooms/tokens/<roomid>
+HIPCHAT_ROOM="<room number>"
+HIPCHAT_TOKEN="<token for room>" # get it from https://<yourname>.hipchat.com/rooms/tokens/<roomid>
 # --
 STOPCOUNTDOWN=10 # Number of seconds to give players shutdown warning in-game.
 STOPWAITFOR=7 # Number of seconds to wait for a srcds to quit normally before we violently kill it.
