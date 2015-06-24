@@ -620,7 +620,7 @@ f_status() {
 		echo "Done"
 	elif [[ "$RUNSTATUS" == "stopped" ]] ; then
 		echo ""
-		echo "Installation not running."
+		echo "$IN_INSTALLID: Installation not running."
 		echo ""
 	elif [[ "$RUNSTATUS" == "crashed" ]] ; then
 		echoerr ""
@@ -4178,8 +4178,7 @@ case "$IN_ARG" in
 		f_allorone f_reconfig
 	;;
 	'rename')
-		f_validate_installid
-		f_rename
+		f_allorone f_rename
 	;;
 	'lockdown-master'|'lock-master')
 		f_validate_installid

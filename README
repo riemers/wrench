@@ -60,12 +60,12 @@ Server-specific commands:
   wrench restart MyTarget
   wrench restartnow MyTarget
   wrench console MyTarget
-  wrench status MyTarget
-  wrench showconfig MyTarget
-  wrench reconfig MyTarget
-  wrench rename MyTarget
-  wrench relink MyTarget
-  wrench delink MyTarget
+  wrench status MyTarget|all
+  wrench showconfig MyTarget|all
+  wrench reconfig MyTarget|all
+  wrench rename MyTarget|all
+  wrench relink MyTarget|all
+  wrench delink MyTarget|all
   wrench lockdown-master MyTarget
   wrench unlock-master MyTarget
   wrench update MyTarget
