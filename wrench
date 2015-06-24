@@ -151,6 +151,9 @@ f_quitifrunning() {
 	# For certain activities, we don't want to proceed if the installation is actively running.
 	# We set RUNQUIT=1, and the parent func uses that to exit/return as needed.
 	#
+	if [[ "$INSTALLID" == "all" ]] ; then
+		return
+	fi
 	f_getpid ; X_GETPID="$?"
 	if [[ "$RUNSTATUS" == "stopped" ]] ; then
 		return 0
@@ -1449,6 +1452,15 @@ f_delink() {
 		echo ""
 	fi
 	# FIXME: We should probably mark this installation as ALLOWSTART=0 in the inst table.
+}
+
+f_all() {
+	ALL_LIST=$($SQLCMD "select INSTALLID from inst where INSTTYPE='linked';")
+		for ALL_CHILD in $ALL_LIST ; do
+		IN_INSTALLID=$ALL_CHILD
+		f_loaddbinst
+		$1 $ALL_CHILD
+	done
 }
 
 f_cleandemos() {
@@ -2932,6 +2944,10 @@ f_loaddbinst() {
 	#
 	# echoerr "DEBUG: Loading inst table for $IN_INSTALLID"
 	LOADDBINSTINFO_FAIL=0
+	# Skip if the param is "all"
+	if [[ "$IN_INSTALLID" == "all" ]] ; then
+		return	
+	fi
 	# We must have a target inst row to work with.
 	if [[ -z "$IN_INSTALLID" ]] ; then
 		LOADDBINSTINFO_FAIL=1
@@ -4042,19 +4058,25 @@ f_validate_installid() {
 		# echo "DEBUG: Trimming trailing slash on input."
 		IN_INSTALLID=$(echo "$IN_INSTALLID" | tr -d '/')
 	fi
-	# Test the DB to see if there is a valid installation by that name.
-	if ! [[ "$($SQLCMD "select INSTALLID from inst where INSTALLID='$IN_INSTALLID';")" == "$IN_INSTALLID" ]] ; then
-		echoerr ""
-		echoerr "ERROR: Installation ID \"$IN_INSTALLID\" not found in the database."
-		echoerr ""
-		exit 1
-	fi
-	# If we are doing something to an install, there should be a directory there.
-	if [[ ! -d "$APPDIR/$IN_INSTALLID" ]] ; then
-		echoerr ""
-		echoerr "ERROR: No directory for installation \"$IN_INSTALLID\" found!"
-		echoerr ""
-		exit 1
+
+	if [[ "$IN_INSTALLID" == "all" ]] ; then
+		IN_INSTALLID=""
+		f_all f_validate_installid
+	else
+		# Test the DB to see if there is a valid installation by that name.
+		if ! [[ "$($SQLCMD "select INSTALLID from inst where INSTALLID='$IN_INSTALLID';")" == "$IN_INSTALLID" ]] ; then
+			echoerr ""
+			echoerr "ERROR: Installation ID \"$IN_INSTALLID\" not found in the database."
+			echoerr ""
+			exit 1
+		fi
+		# If we are doing something to an install, there should be a directory there.
+		if [[ ! -d "$APPDIR/$IN_INSTALLID" ]] ; then
+			echoerr ""
+			echoerr "ERROR: No directory for installation \"$IN_INSTALLID\" found!"
+			echoerr ""
+			exit 1
+		fi
 	fi
 }
 
