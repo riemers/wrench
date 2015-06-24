@@ -1454,13 +1454,19 @@ f_delink() {
 	# FIXME: We should probably mark this installation as ALLOWSTART=0 in the inst table.
 }
 
-f_all() {
-	ALL_LIST=$($SQLCMD "select INSTALLID from inst where INSTTYPE='linked';")
-		for ALL_CHILD in $ALL_LIST ; do
-		IN_INSTALLID=$ALL_CHILD
-		f_loaddbinst
-		$1 $ALL_CHILD
-	done
+f_allorone() {
+	if [[ "$IN_INSTALLID" != "all" ]] ; then
+		f_validate_installid
+		$1
+	else
+		SRV_LIST=$($SQLCMD "select INSTALLID from inst where INSTTYPE='linked';")
+		for SRV_CHILD in $SRV_LIST ; do
+			IN_INSTALLID=$SRV_CHILD
+			f_validate_installid
+			f_loaddbinst
+			$1 $SRV_CHILD
+		done
+	fi
 }
 
 f_cleandemos() {
@@ -4059,24 +4065,19 @@ f_validate_installid() {
 		IN_INSTALLID=$(echo "$IN_INSTALLID" | tr -d '/')
 	fi
 
-	if [[ "$IN_INSTALLID" == "all" ]] ; then
-		IN_INSTALLID=""
-		f_all f_validate_installid
-	else
-		# Test the DB to see if there is a valid installation by that name.
-		if ! [[ "$($SQLCMD "select INSTALLID from inst where INSTALLID='$IN_INSTALLID';")" == "$IN_INSTALLID" ]] ; then
-			echoerr ""
-			echoerr "ERROR: Installation ID \"$IN_INSTALLID\" not found in the database."
-			echoerr ""
-			exit 1
-		fi
-		# If we are doing something to an install, there should be a directory there.
-		if [[ ! -d "$APPDIR/$IN_INSTALLID" ]] ; then
-			echoerr ""
-			echoerr "ERROR: No directory for installation \"$IN_INSTALLID\" found!"
-			echoerr ""
-			exit 1
-		fi
+	# Test the DB to see if there is a valid installation by that name.
+	if ! [[ "$($SQLCMD "select INSTALLID from inst where INSTALLID='$IN_INSTALLID';")" == "$IN_INSTALLID" ]] ; then
+		echoerr ""
+		echoerr "ERROR: Installation ID \"$IN_INSTALLID\" not found in the database."
+		echoerr ""
+		exit 1
+	fi
+	# If we are doing something to an install, there should be a directory there.
+	if [[ ! -d "$APPDIR/$IN_INSTALLID" ]] ; then
+		echoerr ""
+		echoerr "ERROR: No directory for installation \"$IN_INSTALLID\" found!"
+		echoerr ""
+		exit 1
 	fi
 }
 
@@ -4126,8 +4127,7 @@ case "$IN_ARG" in
 		f_listinstalls
 	;;
 	'status')
-		f_validate_installid
-		f_status
+		f_allorone f_status
 	;;
 	'autoupdate')
 		f_validate_1arg
@@ -4154,12 +4154,10 @@ case "$IN_ARG" in
 		f_update
 	;;
 	'relink')
-		f_validate_installid
-		f_relink
+		f_allorone f_relink
 	;;
 	'delink')
-		f_validate_installid
-		f_delink
+		f_allorone f_delink
 	;;
 	'console')
 		f_validate_installid
@@ -4174,12 +4172,10 @@ case "$IN_ARG" in
 		f_uninstall
 	;;
 	'showconfig')
-		f_validate_installid
-		f_showconfig
+		f_allorone f_showconfig
 	;;
 	'reconfig')
-		f_validate_installid
-		f_reconfig
+		f_allorone f_reconfig
 	;;
 	'rename')
 		f_validate_installid
