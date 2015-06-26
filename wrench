@@ -1,6 +1,6 @@
 #!/bin/bash
 # wrench
-# v1.31
+# v1.31.1
 #
 # A Steam Source Dedicated Server (srcds) control system.
 # For use with Valve's Source game servers: TF2, L4D, L4D2, HL2DM, CSS, CSGO, and more.
@@ -2064,7 +2064,7 @@ f_configinstall() {
                 while read -e -r -p "HIPCHATNOTIFY: " -i "$HIPCHATNOTIFY" IN_HIPCHATNOTIFY ; do
                         # Filter invalid characters and validate input.
                         IN_HIPCHATNOTIFY=$(echo "$IN_HIPCHATNOTIFY" | tr -c -d '[:digit:]')
-                        if [[ -z "$IN_HIPCHATNOTIFY" ]] || (echo "$IN_MAILNOTIFY" | egrep -v "^0$|^1$" &> /dev/null ) ; then
+                        if [[ -z "$IN_HIPCHATNOTIFY" ]] || (echo "$IN_HIPCHATNOTIFY" | egrep -v "^0$|^1$" &> /dev/null ) ; then
                                 echo ""
                                 echo "Invalid input detected. Try again."
                         else
@@ -3853,8 +3853,13 @@ f_mailnotify() {
 
 		ENDMESSAGE
 	fi
+
 	if [[ "$HIPCHATNOTIFY" == 1 ]] ; then
-		curl -sS -H 'Content-type: application/json' -d "{\"color\":\"green\", \"message\":\"$INSTALLID: $MAIL_TOPIC - $MAIL_MESSAGE\", \"message_format\":\"html\"}" https://api.hipchat.com/v2/room/$HIPCHAT_ROOM/notification?auth_token=$HIPCHAT_TOKEN
+		if [[ "$MAIL_TOPIC" == *"crash"* ]] ; then
+			curl -sS -H 'Content-type: application/json' -d "{\"color\":\"red\", \"message\":\"$INSTALLID: $MAIL_TOPIC - $MAIL_MESSAGE\", \"message_format\":\"html\",\"notify\":\"true\"}" https://api.hipchat.com/v2/room/$HIPCHAT_ROOM/notification?auth_token=$HIPCHAT_TOKEN
+		else
+			curl -sS -H 'Content-type: application/json' -d "{\"color\":\"green\", \"message\":\"$INSTALLID: $MAIL_TOPIC - $MAIL_MESSAGE\", \"message_format\":\"html\"}" https://api.hipchat.com/v2/room/$HIPCHAT_ROOM/notification?auth_token=$HIPCHAT_TOKEN
+		fi
 	fi
 }
 
