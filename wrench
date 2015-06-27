@@ -157,6 +157,12 @@ f_quitifrunning() {
 	f_getpid ; X_GETPID="$?"
 	if [[ "$RUNSTATUS" == "stopped" ]] ; then
 		return 0
+	elif [[ "$RUNSTATUS" == "running" && "$IN_PARAMS" == *"force" ]] ; then
+		RUNQUIT=1
+		echoerr ""
+		echoerr "FORCE: Installation $INSTALLID is running but will be ignored"
+		echoerr ""
+		return 1
 	elif [[ "$RUNSTATUS" == "running" ]] ; then
 		RUNQUIT=1
 		echoerr ""
@@ -1328,7 +1334,12 @@ f_relink() {
 	fi
 	#
 	f_quitifrunning # Do not proceed if the installation is actively running.
-	if [[ "$RUNQUIT" == 1 ]] ; then return 1 ; fi
+	if [[ "$RUNQUIT" == 1 && "$IN_PARAMS" != *"force" ]] ; then return 1 ; fi
+
+	if [[ "$IN_PARAMS" == "force" ]] ; then
+		echo ""
+		echo "Forcefull relinking of $INSTALLID, this might crash the servers if binary files are updated"
+	fi
 	#
 	# Test that a master exists. This is unlikely to be a problem, but it is possible.
 	if [[ -z "$USEMASTER" ]] ; then
@@ -3913,7 +3924,7 @@ f_help() {
 	echoerr "$MYNAME is a Source Dedicated Server (srcds) management tool for Valve's srcds-based game servers."
 	echoerr ""
 	echoerr "For more information, including full documentation, go here: "
-	echoerr "  http://forums.srcds.com/viewpost/118741"
+	echoerr "  https://github.com/riemers/wrench"
 	f_commandusage
 }
 
@@ -4051,9 +4062,12 @@ f_validate_1arg() {
 
 f_validate_installid() {
 	# Validate arguments where not more or less than one INSTALLID target is requried.
-	if [[ "$IN_PARAMS_NUM" -gt 2 ]] ; then
+	if [[ "$IN_PARAMS_NUM" -gt 2 && $IN_PARAMS != *"force" ]] ; then
 		echoerr ""
 		echoerr "Too many arguments! Only a single argument to \"$IN_ARG\" is accepted."
+		
+		echoerr "here: $IN_PARAMS"
+
 		echoerr ""
 		exit 1
 	fi

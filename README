@@ -64,7 +64,7 @@ Server-specific commands:
   wrench showconfig MyTarget|all
   wrench reconfig MyTarget|all
   wrench rename MyTarget|all
-  wrench relink MyTarget|all
+  wrench relink MyTarget|all <force>
   wrench delink MyTarget|all
   wrench lockdown-master MyTarget
   wrench unlock-master MyTarget
@@ -104,7 +104,7 @@ Normally, a user should not need to interface with the database directly. The "i
 
 Typically, the configuration for a new game type is entered once during the installation of a new server. However, if the game type (srcinfo) configuration needs to be changed or removed, the "gametype" command exists to do so. The "gametype" argument accepts "add", "change", and "delete". With this option, you can add, change, and delete game type configuration.
 
-wrench has a built-in system for automatically updating installations when Steam releases an update for each game type. This autoupdate system will automatically detect when a new update has been released, notify the user via email of the update (including a log), warn in-game users of the update, stop only the affected installation types, update the master, relink all linked installations, and restart those which were running at the time the update started. Unless an update breaks something in the configuration or addons/mods, zero user intervention is required.
+wrench has a built-in system for automatically updating installations when Steam releases an update for each game type. This autoupdate system will automatically detect when a new update has been released, notify the user via email of the update (including a log), warn in-game users of the update, stop only the affected installation types, update the master, relink all linked installations, and restart those which were running at the time the update started. Unless an update breaks something in the configuration or addons/mods, zero user intervention is required. Normally the instances needs to be down for this. But if you are positive the change is minimal (you updates a plugin in your master server or new cfg) you can use the optional extra command "force" at the end to still run it. Use with CAUTION! If you update binary files on the Master and run with force, servers have a good chance of crashing and restarting!
 
 wrench has built-in functionality to automatically clean up srcds installations. srcds isn't very good at cleaning up after itself, so wrench helps out by automatically rotating log files, compressing them, deleting them after a set period of time, cleaning up download cache directories (spray files), cleaning up old replay files, and more. This cleanup process is customized for each game type, and can be enabled or disabled on an individual linked installation basis. Master installations don't need to be cleaned up since they never actually run.
 
