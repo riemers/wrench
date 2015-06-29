@@ -1939,7 +1939,18 @@ f_configinstall() {
 				echo ""
 				echo "Invalid input detected. Try again."
 			else
-				break
+				LIST_PORTS=$($SQLCMD "select hostport from inst;")
+				HP_BAD=0
+				for EACH_PORT in $LIST_PORTS ; do
+					if [[ "$IN_HOSTPORT" == @($EACH_PORT|$[$EACH_PORT+1]|$[$EACH_PORT+2]|$[$EACH_PORT+3]) ]] ; then
+						echo ""
+						echo "Port overlaps or too close to another instance port. Choose another port!"
+						HP_BAD=1
+					fi
+				done
+				if [[ "$HP_BAD" != "1" ]] ; then
+					break
+				fi
 			fi
 		done
 		if [[ "$HOSTPORT" != "$IN_HOSTPORT" ]]; then
