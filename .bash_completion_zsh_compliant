@@ -1,0 +1,51 @@
+# wrench bash auto-completion working with zsh
+# Add this text to your ~/.bash_completion file.
+# Be sure to set APPDIR, SQLDBFILE, and SQLCMD exactly as they are in wrench.
+
+_wrench()
+{
+	local cur prev opts base APPDIR SQLDBFILE SQLCMD LIST_INSTALLS
+	COMPREPLY=()
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+	opts="autocleanup autoupdate bootstart console delink install list listplayers lockdown-master reconfig relink rename restart restartnow setup showconfig start status stop stopall stopnow uninstall unlock-master update updatenow update-validate update-validatenow gametype"
+
+	# APPDIR, SQLDBFILE, and SQLCMD should be the same as what is set in wrench. Change here as needed.
+	APPDIR=~/srcds
+	SQLDBFILE=$APPDIR/wrench.db
+	alias SQLCMD="sqlite3 -batch -list -noheader $SQLDBFILE"
+
+	case "${prev}" in
+	# All installation types.
+		showconfig|reconfig|rename)
+			local LIST_INSTALLS="$(SQLCMD "select INSTALLID from inst;")"
+			COMPREPLY=( $(compgen -W "${LIST_INSTALLS}" -- ${cur}) )
+			return 0
+		;;
+	# Runnable installation types (linked and standalone).
+		start|stop|stopnow|restart|restartnow|console|status|relink|delink)
+			local LIST_RUNNABLE="$(SQLCMD "select INSTALLID from inst where INSTTYPE='linked' or INSTTYPE='standalone';")"
+			COMPREPLY=( $(compgen -W "${LIST_RUNNABLE}" -- ${cur}) )
+			return 0
+		;;
+	# Master installation types.
+		lockdown-master|unlock-master|update|updatenow|update-validate|update-validatenow)
+			local LIST_MASTERS="$(SQLCMD "select INSTALLID from inst where INSTTYPE='master';")"
+			COMPREPLY=( $(compgen -W "${LIST_MASTERS}" -- ${cur}) )
+			return 0
+		;;
+	# Game type actions.
+		gametype)
+			local LIST_GAMETYPE_ACTIONS="add change delete"
+			COMPREPLY=( $(compgen -W "${LIST_GAMETYPE_ACTIONS}" -- ${cur}) )
+			return 0
+		;;
+		*)
+		;;
+	esac
+
+	COMPREPLY=($(compgen -W "${opts}" -- ${cur}))
+	return 0
+}
+complete -F _wrench wrench
