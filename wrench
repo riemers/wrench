@@ -1468,7 +1468,7 @@ f_delink() {
 f_allorone() {
 	if [[ "$IN_INSTALLID" != "all" ]] ; then
 		f_validate_installid
-		$1
+		$1 $2
 	else
 		SRV_LIST=$($SQLCMD "select INSTALLID from inst where INSTTYPE='linked';")
 		for SRV_CHILD in $SRV_LIST ; do
@@ -3258,6 +3258,21 @@ f_reconfig() {
 	fi
 }
 
+f_rcon() {
+	# Not really rcon, just sending information to the console of the tmux session.
+	f_loaddbinst
+	f_getpid
+	IN_ALL=${IN_PARAMS#* }
+	IN_ARGS=${IN_ALL#* }
+	if [[ "$RUNSTATUS" == "running" ]] ; then
+		echo "Sending command '$IN_ARGS' to:"
+		echo " - $INSTALLID"
+		tmux send-keys -t "$INSTALLID" "$IN_ARGS" C-m
+	else
+		echo "Instance $INSTALLID is not running!"
+	fi
+}
+
 f_setup() {
 	# Do the first-time setup. Dependency checks, creating the APPDIR, loading the DB, and similar requirements.
 	#
@@ -3944,14 +3959,19 @@ f_commandusage() {
 	#
 	echoerr ""
 	echoerr "Single-argument commands:"
-	for EACH in $IN_PARAMS1 ; do
+	for EACH in ${IN_PARAMS1[@]} ; do
 		echoerr "  $MYNAME $EACH"
 	done
 	echoerr ""
 	echoerr "Server-specific commands:"
-	for EACH in $IN_PARAMS2 ; do
+	for EACH in ${IN_PARAMS2[@]} ; do
 		echoerr "  $MYNAME $EACH MyTarget"
 	done
+        echoerr ""
+        echoerr "Server-specific multi commands:"
+        for EACH in ${IN_PARAMS3[@]} ; do
+                echoerr "  $MYNAME $EACH MyTarget MyCommand"
+        done
 	if [[ ! "$BEENHERE_HELP" == 1 ]] ; then
 		echoerr ""
 		echoerr "Try \"$MYNAME help\" for more information."
@@ -3981,8 +4001,10 @@ IN_PARAMS_NUM="$#"
 # Note that there are also number of hidden input arguments, such as "run" and "gametype", plus aliases.
 #  IN_PARAMS1 = single argument commands. No $2 possible.
 #  IN_PARAMS2 = dual argument commands, $2 is required.
-IN_PARAMS1="install uninstall list listplayers autocleanup autoupdate bootstart stopall setup"
-IN_PARAMS2="start stop stopnow restart restartnow console status showconfig reconfig rename relink delink lockdown-master unlock-master update updatenow update-validate update-validatenow gametype"
+#  IN_PARAMS3 = multiple argument commands, $2, $3+ is required.
+declare -a IN_PARAMS1=(install uninstall list listplayers autocleanup autoupdate bootstart stopall setup)
+declare -a IN_PARAMS2=(start stop stopnow restart restartnow console status showconfig reconfig rename relink delink lockdown-master unlock-master update updatenow update-validate update-validatenow gametype)
+declare -a IN_PARAMS3=(rcon)
 
 # If "quakestat" is insatlled instead of qstat, use quakestat instead. quakestat comes from the debian qstat package.
 if ! (type qstat &> /dev/null) && (type quakestat &> /dev/null) ; then
@@ -4063,7 +4085,7 @@ fi
 
 f_validate_1arg() {
 	# If this is a single-argument command trying to use more arguments when it should not, print a specific error.
-	if [[ "$IN_PARAMS_NUM" -gt 1 ]] ; then
+	if [[ "$IN_PARAMS_NUM" -gt 1 && " ${IN_PARAMS1[@]}" =~ "${IN_ARG} " ]] ; then
 		echoerr ""
 		echoerr "ERROR: Action argument \"$IN_ARG\" does not accept any sub-arguments."
 		echoerr ""
@@ -4073,7 +4095,16 @@ f_validate_1arg() {
 
 f_validate_installid() {
 	# Validate arguments where not more or less than one INSTALLID target is requried.
-	if [[ "$IN_PARAMS_NUM" -gt 2 && $IN_PARAMS != *"force" ]] ; then
+        if [[ "$IN_PARAMS_NUM" -lt 3 && " ${IN_PARAMS3[@]} " =~ " ${IN_ARG} " &&  $IN_PARAMS != *"force" ]] ; then
+                echoerr ""
+                echoerr "Too few arguments! Minimum of 4 arguments to \"$IN_ARG\" is accepted."
+
+                echoerr "here: $IN_PARAMS"
+
+                echoerr ""
+                exit 1
+        fi
+	if [[ "$IN_PARAMS_NUM" -gt 2 && " ${IN_PARAMS2[@]}" =~ "${IN_ARG} " &&  $IN_PARAMS != *"force" ]] ; then
 		echoerr ""
 		echoerr "Too many arguments! Only a single argument to \"$IN_ARG\" is accepted."
 		
@@ -4204,6 +4235,9 @@ case "$IN_ARG" in
 	'showconfig')
 		f_allorone f_showconfig
 	;;
+        'rcon')
+                f_allorone f_rcon $@
+        ;;
 	'reconfig')
 		f_allorone f_reconfig
 	;;

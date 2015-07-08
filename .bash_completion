@@ -9,7 +9,7 @@ _wrench()
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-	opts="autocleanup autoupdate bootstart console delink install list listplayers lockdown-master reconfig relink rename restart restartnow setup showconfig start status stop stopall stopnow uninstall unlock-master update updatenow update-validate update-validatenow gametype"
+	opts="autocleanup autoupdate bootstart console delink install list listplayers lockdown-master rcon reconfig relink rename restart restartnow setup showconfig start status stop stopall stopnow uninstall unlock-master update updatenow update-validate update-validatenow gametype"
 
 	# APPDIR, SQLDBFILE, and SQLCMD should be the same as what is set in wrench. Change here as needed.
 	APPDIR=~/srcds
@@ -18,7 +18,7 @@ _wrench()
 
 	case "${prev}" in
 	# All installation types.
-		showconfig|reconfig|rename)
+		showconfig|reconfig|rcon|rename)
 			local LIST_INSTALLS=$($SQLCMD "select INSTALLID from inst;")
 			COMPREPLY=( $(compgen -W "${LIST_INSTALLS}" -- ${cur}) )
 			return 0
