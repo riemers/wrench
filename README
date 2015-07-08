@@ -74,6 +74,8 @@ Server-specific commands:
   wrench update-validatenow MyTarget
   wrench gametype MyTarget
 
+Server-specific multi commands:
+  wrench rcon MyTarget MyCommand
 
 
 The primary features which makes wrench different are symlinks, tmux, sqlite DBs, autoupdates, autocleanup, and wrench_run. Let's review each of these features, because understanding them is critical to understanding wrench.
@@ -349,6 +351,8 @@ As of version 1.10 (20140606), the application was renamed from "wrench.sh" to "
 There are a number of different ways to stop a running server which are acceptable. Of course, you can use wrench itself with the "stop" or "stopnow" command, but you can also type "quit" on the console and everything will clean itself up. You can also send a TERM signal with the kill command. Never ever send a kill -9 (SIGKILL) unless you know what you are doing.
 
 The REPLAYPORT parameter has been removed from wrench as of version 1.25 (20150406). It was the Replay Port (+replay_port) used by TF2, which was depreciated by Valve.
+
+Rcon option can be used to do a "_restart" or any other command. You don't have to enclose it with quotes "". But for best practice its usefull to do incase you want specific characters in there. Please take note that if you run this command and the server is just changing maps it could perhaps just miss it. So don't use it for anything "vital"
 
 --
 
