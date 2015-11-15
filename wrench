@@ -408,10 +408,14 @@ f_stop() {
 			until [[ "$STOPCOUNT" -eq 0 ]] ; do
 				echo -n "."
 				# Send both say and cm_csay, since sm_csay requires sourcemod.
+				if ! [[ -n "$MESSAGEDOWN" ]] ; then
+					MESSAGEDOWN="Server is shutting down in $STOPCOUNT seconds!"
+				fi
+
 				tmux send-keys -t "$INSTALLID" \
-					"sm_csay Server is shutting down in $STOPCOUNT seconds!" C-m
+					"sm_csay $MESSAGEDOWN" C-m
 				tmux send-keys -t "$INSTALLID" \
-					"say Server is shutting down in $STOPCOUNT seconds!" C-m
+					"say Server $MESSAGEDOWN" C-m
 				STOPCOUNT=$(( $STOPCOUNT - 1))
 				sleep 1
 			done ; unset STOPCOUNT
@@ -4659,6 +4663,12 @@ case "$IN_ARG" in
 		f_stop
 		sleep 1
 		f_start
+	;;
+	'restartall')
+		f_validate_1arg || exit $?
+		f_stopall
+		sleep 1
+		f_bootstart
 	;;
 	'restartnow')
 		f_validate_installid || exit $?
