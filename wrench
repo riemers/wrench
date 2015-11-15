@@ -1,6 +1,6 @@
 #!/bin/bash
 # wrench
-# v1.31.1
+# v2.01
 #
 # A Steam Source Dedicated Server (srcds) control system.
 # For use with Valve's Source game servers: TF2, L4D, L4D2, HL2DM, CSS, CSGO, and more.
@@ -8,36 +8,15 @@
 # --
 # Set PATH as is apropriate for your system. Mostly we need this for cron usage, otherwise possibly not needed.
 PATH=~/bin:/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin
-#
-APPDIR=~/srcds # This is the installation directory where wrench adds new installations.
-SQLDBFILE=$APPDIR/wrench.db # The location of the SQLite database file.
-STEAMCMD_BIN=~/bin/steamcmd/steamcmd.sh
-SRCDS_LINUX="srcds_linux"
-WRENCH_MAILTO="root@localhost" # The default MAILTO address, mostly needed for autoupdate notifications.
-REPLAY_ENABLED=1 # Disable replay related features by setting this 0.
-REPLAYBASEDIR=/var/www/srcds-replays # The web server replay base directory.
-HIPCHAT_ROOM="<room number>"
-HIPCHAT_TOKEN="<token for room>" # get it from https://<yourname>.hipchat.com/rooms/tokens/<roomid>
-# --
-STOPCOUNTDOWN=10 # Number of seconds to give players shutdown warning in-game.
-STOPWAITFOR=7 # Number of seconds to wait for a srcds to quit normally before we violently kill it.
-UPDATETRIES=3 # How many times to attempt to update before we give up.
-DEMOSEXPIRE=91 # For auto-cleanup, how long to keep demo/sourcetv files in days.
-LOGSEXPIRE=91 # For auto-cleanup, how long to keep log files in days.
-DOWNLOADSEXPIRE=7 # For auto-cleanup, how long to keep download/cache files in days.
-REPLAYSEXPIRE=5 # For auto-cleanup, how long to keep replay files in days.
-AUTOUPDATE_SLEEP1=90 # Sleep sections between initially (first pass) discovering the need for an update, and then actually doing it.
-AUTOUPDATE_SLEEP2=15 # Sleep sections after an autoupdate failed postcheck, in between attempts.
-AUTOUPDATE_POSTCHECK_RETRIES=3 # How many autoupdate attempts to try when the postcheck fails. Remember that this xUPDATETRIES = total tries.
-RECOVER_LIMIT_WINDOW=3600 # One hour, in seconds.
-RECOVER_LIMIT_MAX=6 # If this number of crashes ocurs within the limit window, do not recover from the crash.
-RECOVERY_ABSOLUTE_MAX=100 # Absolute maximum number of crashes to tolerate during a single run.
 # --
 USER=$(whoami)
 MYNAME=$(basename $0)
 MYSELF=$(readlink -f $0)
 RUNID=$(date +%Y%m%d%H%M%S)-$$
 MYPID=$$
+# Read in config file
+. $MYSELF/.config
+
 MAILER=mail
 SQLITE=sqlite3
 SQLCMD="sqlite3 -batch -list -noheader $SQLDBFILE"
@@ -45,37 +24,42 @@ SQLSHOWCMD="sqlite3 -batch -line -noheader $SQLDBFILE"
 NICECMD="nice -n 11 ionice -c 2 -n 6"
 AUTOUPDATE_LOCKFILE="/tmp/${MYNAME}-${USER}-autoupdate.pid"
 AUTOUPDATE_LOGDIR=$APPDIR/autoupdate-logs
-AUTOUPDATE_LOGFILE=$AUTOUPDATE_LOGDIR/$(basename $0 .sh)-${RUNID}.log
+AUTOUPDATE_LOGFILE=$AUTOUPDATE_LOGDIR/$(basename $0 .sh)_autoupdate-${RUNID}.log
 MAIL_SUBJ_PREFIX="WRENCH:"
 # --
 
 echoerr() {
 	# Print errors to stderr.
 	echo "$@" 1>&2;
+	if [[ -n "$SEEN_ERROR" ]] ; then declare -r SEEN_ERROR=1 ; fi # If we saw any errors, set SEEN_ERROR=1, for later use.
 }
 
 f_cleanuptrap() {
 	# Cleanup trap.
 	#
+	unset MYPID_CHILDREN
+	local MYPID_CHILDREN MYPID_BAD_CHILDREN X_CKILL_TIMEOUT
+	#
 	echoerr ""
 	echoerr "Caught signal."
 	#
-	# Find and kill off all branch processes which might be running.
-	MYPID_CHILDREN=$(pgrep -P $MYPID)
+	# Find and kill off all child processes which might be running.
+	MYPID_CHILDREN=$(pgrep -P $MYPID 2> /dev/null)
 	if [[ -n "$MYPID_CHILDREN" ]] ; then
 		# echoerr "DEBUG: Killing child processes: $(echo $MYPID_CHILDREN | tr -d "\n")"
 		for EACH in $MYPID_CHILDREN ; do
 			kill "$EACH" &> /dev/null
-		done
+		done ; unset EACH
 		# Give these processes 3 seconds to die by SIGTERM before we KILL them.
 		# This does not work because wait is a bash built-in. # timeout 3 wait "$MYPID_CHILDREN" ; X_CKILL_TIMEOUT=$?
-		if [[ "$X_CKILL_TIMEOUT" == 124 ]] ; then
-			MYPID_BAD_CHILDREN=$(pgrep -P $MYPID)
-			# echoerr "DEBUG: Killing bad child processes: $(echo $MYPID_BAD_CHILDREN | tr -d "\n")"
-			for EACH in $MYPID_BAD_CHILDREN; do
-				kill -s SIGKILL "$EACH" &> /dev/null
-			done
-		fi
+		# Should not need this anyway.
+		# if [[ "$X_CKILL_TIMEOUT" == 124 ]] ; then
+		# 	MYPID_BAD_CHILDREN=$(pgrep -P $MYPID)
+		#	# echoerr "DEBUG: Killing bad child processes: $(echo $MYPID_BAD_CHILDREN | tr -d "\n")"
+		#	for EACH in $MYPID_BAD_CHILDREN; do
+		#		kill -s SIGKILL "$EACH" &> /dev/null
+		#	done ; unset EACH
+		#fi
 	fi
 	#
 	echoerr -n "Cleaning up: "
@@ -86,7 +70,8 @@ f_cleanuptrap() {
 	fi
 	if [[ "$AUTOUPDATING" == 1 ]] ; then # Cleanup during an auto-update.
 		[[ -f "$AUTOUPDATE_LOCKFILE" ]] && rm -f "$AUTOUPDATE_LOCKFILE" &> /dev/null
-		[[ -f "$AUTOUPDATE_LOGFILE" ]] && rm -f "$AUTOUPDATE_LOGFILE" &> /dev/null
+		# Should we really be deleting the log file?
+		# [[ -f "$AUTOUPDATE_LOGFILE" ]] && rm -f "$AUTOUPDATE_LOGFILE" &> /dev/null
 	fi
 	if [[ "$LISTINGPLAYERS" == 1 ]] ; then # Cleanup when listing players.
 		find /tmp -maxdepth 1 -type p -name "qstat-out-*$RUNID" -exec rm -f '{}' + &> /dev/null
@@ -109,7 +94,8 @@ f_getpid() {
 	# We return exit 1 on error, otherwise 0.
 	# f_getpid should never send stdout or stderr, unless debugging.
 	#
-	# declare -i GAMESERVPID
+	unset GAMESERVPID RUNSTATUS
+	#
 	# We should know where to look up the PIDFILE. If we don't, that's a serious problem.
 	if [[ -z "$PIDFILE" ]] ; then
 		# echoerr "DEBUG: Call to obtain PID, but PIDFILE not set."
@@ -119,7 +105,8 @@ f_getpid() {
 	fi
 	# Bad things that could possibly happen include the PID file being missing, the process being missing, or the tmux session being missing.
 	if [[ -r "$PIDFILE" ]] ; then
-		GAMESERVPID=$(cat $PIDFILE)
+		# declare -i GAMESERVPID=$(cat $PIDFILE) # This fails! I guess the data is seen as a string?
+		GAMESERVPID=$(cat $PIDFILE | egrep -m 1 -o "^[0-9]+$" )
 		# Make sure the process is not crashed.
 		# Note that we use SRCDS_LINUX as the name of the process here for validation. This may be incompatible with mods, and non-srcds_linux platforms.
 		if [[ -n "$GAMESERVPID" ]] && [[ "$(ps --no-headers -p $GAMESERVPID -o comm)" == "$SRCDS_LINUX" ]] && [[ -z "$(ps --no-headers -p $GAMESERVPID -o pid)" ]] ; then
@@ -151,13 +138,16 @@ f_quitifrunning() {
 	# For certain activities, we don't want to proceed if the installation is actively running.
 	# We set RUNQUIT=1, and the parent func uses that to exit/return as needed.
 	#
-	if [[ "$INSTALLID" == "all" ]] ; then
+	unset RUNQUIT
+	local X_GETPID
+	#
+    if [[ "$INSTALLID" == "all" ]] ; then
 		return
 	fi
 	f_getpid ; X_GETPID="$?"
 	if [[ "$RUNSTATUS" == "stopped" ]] ; then
 		return 0
-	elif [[ "$RUNSTATUS" == "running" && "$IN_PARAMS" == *"force" ]] ; then
+    elif [[ "$RUNSTATUS" == "running" && "$IN_PARAMS" == *"force" ]] ; then
 		RUNQUIT=1
 		echoerr ""
 		echoerr "FORCE: Installation $INSTALLID is running but will be ignored"
@@ -193,6 +183,9 @@ f_quitifrunning() {
 
 f_qstat() {
 	# qstat replacement function. Mostly because of 0.0.0.0 addresses.
+	#
+	local QSTAT_PARAMS QSTAT_IPADDR
+	#
 	QSTAT_PARAMS="$@"
 	if [[ "$IPADDR" == "0.0.0.0" ]] ; then
 		# We need to replace 0.0.0.0 with a real local IP address.
@@ -205,6 +198,9 @@ f_qstat() {
 
 f_start() {
 	# Start an installation.
+	#
+	unset EXPORT_VARS
+	local X_TMUXSTART X_RENICE STARTUP_CAPTURE_PANE_FILE EVALTXT_START_CMD FQP_STARTBIN
 	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
@@ -255,6 +251,14 @@ f_start() {
 	# Check for an update lock.
 	f_lockcheck
 	if [[ "$LOCKFAIL" == 1 ]] ; then return 1 ; fi
+	# Warn if the server has no autoexec.cfg, no server.cfg, and no -exec on the STARTBINARGS. This is true for an unconfigured server.
+	# Are there any situations where this might warn falsely? Might want to offer a disable option.
+	if ! ( echo "$STARTBINARGS" | egrep -o " -exec" &> /dev/null ) && ! [[ -f "$GAMEDIR/cfg/autoexec.cfg" ]] && ! [[ -f "$GAMEDIR/cfg/server.cfg" ]] ; then
+		echoerr ""
+		echoerr "WARNING: No autoexec.cfg, server.cfg, or -exec in STARTBINARGS found."
+		echoerr "  This probably means the server is not configured. It may fail to start correctly."
+		echoerr ""
+	fi
 	# Continue if sane.
 	#
 	# NOTE: umask 002 (file:rw-rw-r-- dir:rwxrwxr-x) is needed so that replay files can be read by the web server.
@@ -284,7 +288,7 @@ f_start() {
 			INSTALLDIR GAMETYPE GAMENAME INSTTYPE STARTBIN GAMEARG BINDIR BINDIRSUBD USEMASTER LOCKFILE \
 			PIDFILE IPADDR CLIENTPORT HOSTPORT TVPORT STEAMPORT ALLOWSTART BOOTSTART AUTOCLEANUP MAILTO \
 			MAILER MAIL_SUBJ_PREFIX MAILNOTIFY HIPCHATNOTIFY RECOVER_CRASH_ENABLE RECOVER_WATCHDOG_ENABLE RECOVER_WATCHDOG_TEST_INTERVAL \
-			RECOVER_WATCHDOG_POLL_MAX RECOVER_WATCHDOG_START_WAIT RECOVER_SLEEP"
+			RECOVER_WATCHDOG_POLL_MAX RECOVER_WATCHDOG_START_WAIT RECOVER_SLEEP TMUX_CAPTURE_OPTS"
 		#
 		# FIXME: We don't really need eval any more. We can show what tmux used as it's start command like so;
 		#   tmux list-panes -t "$INSTALLID" -F '#{pane_start_command}'
@@ -319,7 +323,7 @@ f_start() {
 	# We will wait until the PIDFILE is written. Sometimes this can take many seconds.
 	if [[ -z "$(cat "$PIDFILE" 2> /dev/null)" ]] ; then # NOTE: We won't even hit this if the PIDFILE is written really fast (unlikely).
 		echo -n "Starting $INSTALLID:"
-		STARTWAITCOUNT=0
+		declare -i STARTWAITCOUNT=0
 		until [[ -n "$(cat "$PIDFILE" 2> /dev/null)" ]] ; do
 			# Check if the tmux pane died early. This is a sign that the STARTBIN or SRCDS_LINUX quit.
 			if [[ "$(tmux list-panes -t "$INSTALLID" -F '#{pane_dead}' 2> /dev/null)" == 1 ]] ; then
@@ -350,7 +354,7 @@ f_start() {
 			fi
 			sleep 1
 			echo -n "."
-		done
+		done ; unset STARTWAITCOUNT STARTUP_CAPTURE_PANE_FILE
 		echo "Done"
 	fi
 	#
@@ -385,6 +389,9 @@ f_start() {
 f_stop() {
 	# Stop a running installation.
 	# 
+	unset STOPFAIL
+	local X_GETPID
+	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
 	# FIXME: For mail notifications, we really should not notify until later, after we know we CAN stop, and maybe after we know the exit code.
@@ -406,7 +413,7 @@ f_stop() {
 					"say Server is shutting down in $STOPCOUNT seconds!" C-m
 				STOPCOUNT=$(( $STOPCOUNT - 1))
 				sleep 1
-			done
+			done ; unset STOPCOUNT
 			echo "Done"
 		else
 			# Stop more or less immediately.
@@ -417,7 +424,7 @@ f_stop() {
 		# Now verify that the process is actually gone via the PID.
 		if [[ $(ps --no-headers -p "$GAMESERVPID" -o pid | wc -l) -gt 0 ]] ; then
 			echo -n "Waiting for server to stop: "
-			STOPWAITCOUNT=0
+			declare -i STOPWAITCOUNT=0
 			while [[ $(ps --no-headers -p "$GAMESERVPID" -o pid | wc -l) -gt 0 ]] ; do
 				STOPWAITCOUNT=$(( $STOPWAITCOUNT + 1))
 				if [[ "$STOPWAITCOUNT" -gt "$STOPWAITFOR" ]] ; then
@@ -435,14 +442,14 @@ f_stop() {
 				fi
 				sleep 1
 				echo -n "."
-			done
+			done ; unset STOPWAITCOUNT
 			echo "Done"
 		fi
 		#
 		# Kill the tmux session too. If "quit" causes a crash, it will just restart with a new PID.
 		if ( tmux has-session -t "$INSTALLID" 2> /dev/null ) ; then
 			echo -n "Waiting for tmux session to die: "
-			TMUXDIEWAITCOUNT=0
+			declare -i TMUXDIEWAITCOUNT=0
 			while ( tmux has-session -t "$INSTALLID" 2> /dev/null ) ; do
 				TMUXDIEWAITCOUNT=$(( $TMUXDIEWAITCOUNT + 1))
 				if [[ "$TMUXDIEWAITCOUNT" -gt 5 ]] ; then
@@ -457,7 +464,7 @@ f_stop() {
 				fi
 				sleep 1
 				echo -n "."
-			done
+			done ; unset TMUXDIEWAITCOUNT
 			echo "Done"
 		fi
 		# Remove the PID file.
@@ -523,7 +530,7 @@ f_stopall() {
 			f_stop
 			echo "--"
 			echo "" )
-		done
+		done ; unset EACH IN_INSTALLID
 		echo "All running installations stopped."
 		echo ""
 	fi
@@ -568,7 +575,7 @@ f_bootstart() {
 			echoerr "--"
 			continue
 		fi )
-	done
+	done ; unset EACH IN_INSTALLID
 	echo ""
 	echo "Done"
 	echo ""
@@ -577,6 +584,8 @@ f_bootstart() {
 f_status() {
 	# Display the status of a particular installation. Intended mostly to display info about active/running installations.
 	# 
+	local PROCINFO_ARGS PROCINFO_PCPU PROCINFO_PPRIO PROCINFO_PSR PROCINFO_EUSER PROCINFO_RSS PROCINFO_VSZ PROCINFO_LSTART PROCINFO_ETIME PROCINFO_CPUTIME
+	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
 	f_getpid ; X_GETPID="$?"
@@ -644,6 +653,8 @@ f_status() {
 f_listinstalls() {
 	# List all valid installations. This is determined by an entry in the DB inst table, then we look for a directory in $APPDIR.
 	#
+	local LIST_INSTALLS
+	#
 	echo ""
 	LIST_INSTALLS=$($SQLCMD "select INSTALLID from inst;")
 	if [[ -z "$LIST_INSTALLS" ]] ; then
@@ -661,7 +672,7 @@ f_listinstalls() {
 			if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then continue ; fi
 			f_getpid ; X_GETPID="$?"
 			echo "$INSTALLID|$INSTTYPE|$RUNSTATUS"
-		done
+		done ; unset EACH_LISTINSTALL IN_INSTALLID
 		) | column -t -s "|"
 		echo ""
 	fi
@@ -696,6 +707,7 @@ f_listplayers() {
 	# Write each fifo so that we can read it later
 	# We use fifos here so that we can do the polling in parallel, making this process much faster.
 	LISTINGPLAYERS=1
+	# FIXME: Why not do a standard inst load here?
 	for EACH in $LIST_RUNNING ; do
 		( while IFS='|' read IPADDR HOSTPORT ; do
 			DB_IPADDR=$IPADDR
@@ -708,7 +720,8 @@ f_listplayers() {
 		QSTATOUT=/tmp/qstat-out-$EACH-$RUNID
 		mkfifo $QSTATOUT
 		echo "$(f_qstat -P -a2s $IPADDR:$HOSTPORT)" 1> $QSTATOUT 2> /dev/null ) &
-	done
+		unset QSTATOUT IPADDR DB_IPADDR HOSTPORT DB_HOSTPORT
+	done ; unset EACH
 	# sleep to make the output look a little more consistent, since qstat sleeps 1 anyway.
 	sleep 2
 	#
@@ -718,8 +731,8 @@ f_listplayers() {
 		echo "qstat player list for $EACH:"
 		cat "$QSTATOUT"
 		echo ""
-		rm -f "$QSTATOUT" )
-	done
+		rm -f "$QSTATOUT" ) ; unset QSTATOUT
+	done ; unset EACH
 	LISTINGPLAYERS=0
 	echo ""
 }
@@ -727,6 +740,8 @@ f_listplayers() {
 f_lockdownmaster() {
 	# Lock down the filesystem permissions on a master installation to prevent accidental changes.
 	# This also sets sane permissions, such as all files not being ugo+x. This replaces fixperms.
+	#
+	unset LOCKMASTER_FAIL
 	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
@@ -743,7 +758,7 @@ f_lockdownmaster() {
 	for EACH in $($NICECMD find "$BINDIR" -mindepth 1 -maxdepth 1 -type f -name "srcds_*" | egrep "^$BINDIR/srcds_[amd$|i386$|i486$|i586$|i686$|run$|linux$|osx$]") ; do
 		# echoerr "DEBUG: Adding +x bit on $EACH"
 		chmod ug+x "$EACH" || LOCKMASTER_FAIL=1 # Re-add execute perms for only those files which should have them.
-	done
+	done ; unset EACH
 	$NICECMD find "$INSTALLDIR" -type f -exec chmod ugo+r '{}' + || LOCKMASTER_FAIL=1
 	$NICECMD find "$INSTALLDIR" -type d -exec chmod ugo+rx '{}' + || LOCKMASTER_FAIL=1
 	$NICECMD find "$INSTALLDIR" -type f -exec chmod ugo-w '{}' + || LOCKMASTER_FAIL=1
@@ -760,6 +775,8 @@ f_lockdownmaster() {
 
 f_unlockmaster() {
 	# Unlock the master installation for writing. The only time this should be needed is for updating or intentional modification of the master.
+	#
+	unset UNLOCKMASTER_FAIL
 	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
@@ -787,17 +804,33 @@ f_unlockmaster() {
 f_getlocalver() {
 	# Get the local application version.
 	#
-	# We must have a valid Steam.inf file to work with.
+	unset LOCAL_VER
 	#
-	if [[ -z "$STEAMINF_FILE" ]] ; then
-		echoerr "ERROR: Call to get the local application version, but STEAMINF_FILE is invalid."
+	# If we don't have a valid INSTVER_METHOD, then we can't do anything.
+	if [[ "$INSTVER_METHOD" == steaminf ]] ; then
+		# We must have a valid Steam.inf file to work with.
+		if [[ -z "$STEAMINF_FILE" ]] ; then
+			echoerr "ERROR: Call to get the local application version, but STEAMINF_FILE is invalid."
+			return 1
+		fi
+		LOCAL_VER=$(egrep "^PatchVersion=" "$STEAMINF_FILE" | cut -f 2 -d "=" | tr -c -d [:digit:])
+	elif [[ "$INSTVER_METHOD" == db ]] ; then
+		# Get the local version from the srcinfo table INSTVER column.
+		# We assume the currently installed version is the previous required_version from the last update.
+		LOCAL_VER=$INSTVER
+	else
+		echoerr ""
+		echoerr "ERROR: INSTVER_METHOD not valid. INSTVER_METHOD=\"$INSTVER_METHOD\""
+		echoerr "  Unable to get the local version."
+		echoerr ""
 		return 1
 	fi
-	LOCAL_VER=$(egrep "^PatchVersion=" "$STEAMINF_FILE" | cut -f 2 -d "=" | tr -c -d [:digit:])
 }
 
 f_getup2datereqver() {
 	# Get the remote Required Version from Valve's UpToDate WebAPI.
+	#
+	unset UPTODATECHECK_URL REMOTE_VER
 	#
 	# Without the CLIENT_APPID, we can do nothing.
 	if [[ -z "$CLIENT_APPID" ]] ; then
@@ -813,6 +846,8 @@ f_update_steamcmd() {
 	# Update with SteamCMD/SteamPipe
 	# Note that we don't do any lock checking here. f_update does that.
 	#
+	local STEAMCMD_UPDATE_COUNTER UPDATEARG EVALTXT_STEAMCMD_UPDATE_CMD X_UPDATE_STEAMCMD
+	#
 	echo ""
 	#
 	# If SteamCMD is not found, there is nothing we can do.
@@ -826,7 +861,6 @@ f_update_steamcmd() {
 		echoerr ""
 		return 2
 	fi
-	declare -i STEAMCMD_UPDATE_COUNTER="0"
 	if [[ "$VERIFYUPDATE" == "1" ]] ; then
 		UPDATEARG="+app_update $SERVER_APPID validate"
 		# echoerr "DEUBG: Updating with SteamCMD validate"
@@ -842,6 +876,7 @@ f_update_steamcmd() {
 	echo "  $EVALTXT_STEAMCMD_UPDATE_CMD"
 	echo ""
 	#
+	declare -i STEAMCMD_UPDATE_COUNTER="0"
 	while true ; do
 		eval $EVALTXT_STEAMCMD_UPDATE_CMD ; X_UPDATE_STEAMCMD=$?
 		STEAMCMD_UPDATE_COUNTER=$(( $STEAMCMD_UPDATE_COUNTER + 1)) # Increment the counter
@@ -864,11 +899,14 @@ f_update_steamcmd() {
 				return 1
 			fi
 		fi
-	done
+	done ; unset STEAMCMD_UPDATE_COUNTER X_UPDATE_STEAMCMD
 }
 
 f_update() {
 	# Update a srcds installation.
+	#
+	unset UPDATER_FAIL UPDATING
+	local X_UPDATER X_UPDATE_SETLOCK X_UPDATE_RMLOCK X_LOCKMASTER UPDATE_POSTCHECK_COUNTER POSTCHECK_LOCAL_VER POSTCHECK_REMOTE_VER
 	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
@@ -885,7 +923,7 @@ f_update() {
 		'linked') # Never update a linked install. That's what relinking is for.
 			echoerr ""
 			echoerr "ERROR: $INSTALLID is a $INSTTYPE type installation."
-			echoerr "  This type of installation should never be updated directly."
+			echoerr "  This type of installation should never be updated directly. Update the master instead."
 			echoerr "  If you need to relink the installation, use the \"relink\" argument."
 			echoerr ""
 			return 1
@@ -918,7 +956,8 @@ f_update() {
 	fi
 	#
 	while true ; do
-		# Choose and use the update tool. Previously HLDSUpdateTool was an option, but now only SteamCMD is supported.
+		# Choose and use the update tool on the target installation.
+		# NOTE: Previously HLDSUpdateTool was an option, but now only SteamCMD is supported. There may be related cruft. 
 		case "$UPDATER" in
 			'SteamCMD')
 				echo "Updater using SteamCMD."
@@ -934,8 +973,8 @@ f_update() {
 		#
 		# Now that we ran the updater, we need to verify that it worked, and if it didn't try again or fail out.
 		# Remember that our updater itself may retry internally, so this may be redundant.
-		#   The reason this exists is because sometimes the Steam Cloud content depots are out of date when updates get released.
-		#   Often, just waiting a little while fixes the issue.
+		#   Sometimes the Steam Cloud content depots are out of date when updates get released, or Steam services are down/broken. 
+		#   Often, waiting a little while fixes the issue.
 		#
 		UPDATE_POSTCHECK_COUNTER=$(( $UPDATE_POSTCHECK_COUNTER + 1)) # Increment the counter
 		#
@@ -956,38 +995,51 @@ f_update() {
 				echo ""
 				sleep "$AUTOUPDATE_SLEEP2"
 				continue
-			else    
+			else
 				UPDATER_FAIL=1
 				echoerr "ERROR: Updater tried $UPDATE_POSTCHECK_COUNTER times already. Will not try again."
 				echoerr ""
 				break
 			fi
 		elif [[ "$X_UPDATER" == 0 ]] ; then
-			# We compare the remote and local versions. If they are out of sync, that is a problem.
-			f_getlocalver ; POSTCHECK_LOCAL_VER="$LOCAL_VER"
-			f_getup2datereqver ; POSTCHECK_REMOTE_VER="$REMOTE_VER"
-			if [[ "$POSTCHECK_LOCAL_VER" == "$POSTCHECK_REMOTE_VER" ]]; then
-				UPDATER_FAIL=0
-				echo "Post-update version check result: Success"
-				echo ""
-				break
-			else
-				if [[ "$UPDATE_POSTCHECK_COUNTER" -lt "$AUTOUPDATE_POSTCHECK_RETRIES" ]] ; then
-					echo "Post-updater version check failed on try $UPDATE_POSTCHECK_COUNTER. Will try again in $AUTOUPDATE_SLEEP2 seconds."
+			# We can only do a post-check if we compare the remote version to the local version from the steam.inf file.
+			if [[ "$INSTVER_METHOD" == steaminf ]] ; then
+				# We compare the remote and local versions. If they are out of sync, that is a problem.
+				f_getlocalver ; POSTCHECK_LOCAL_VER="$LOCAL_VER"
+				f_getup2datereqver ; POSTCHECK_REMOTE_VER="$REMOTE_VER"
+				if [[ "$POSTCHECK_LOCAL_VER" == "$POSTCHECK_REMOTE_VER" ]]; then
+					# Record the INSTVER as $REMOTE_VER
+					$SQLCMD "update inst set INSTVER='$REMOTE_VER' where INSTALLID='$INSTALLID';"
+					UPDATER_FAIL=0
+					echo "Post-update version check result: Success"
 					echo ""
-					sleep "$AUTOUPDATE_SLEEP2"
-					continue
-				else    
-					UPDATER_FAIL=1
-					echoerr "ERROR: Post-updater version check failed on try $UPDATE_POSTCHECK_COUNTER. Will not try again."
-					echoerr "POSTCHECK_LOCAL_VER=$POSTCHECK_LOCAL_VER, POSTCHECK_REMOTE_VER=$POSTCHECK_REMOTE_VER"
-					echoerr ""
 					break
+				else
+					if [[ "$UPDATE_POSTCHECK_COUNTER" -lt "$AUTOUPDATE_POSTCHECK_RETRIES" ]] ; then
+						echo "Post-updater version check failed on try $UPDATE_POSTCHECK_COUNTER. Will try again in $AUTOUPDATE_SLEEP2 seconds."
+						echo ""
+						sleep "$AUTOUPDATE_SLEEP2"
+						continue
+					else
+						UPDATER_FAIL=1
+						echoerr "ERROR: Post-updater version check failed on try $UPDATE_POSTCHECK_COUNTER. Will not try again."
+						echoerr "POSTCHECK_LOCAL_VER=$POSTCHECK_LOCAL_VER, POSTCHECK_REMOTE_VER=$POSTCHECK_REMOTE_VER"
+						echoerr ""
+						break
+					fi
 				fi
+			else
+				# Since we have no other way to compare the local version to what Valve's UpToDateURL says, we have to assume success.
+				# FIXME 20150604: I don't like this. We should get remote version sooner.
+				UPDATER_FAIL=0
+				# Record the INSTVER as $REMOTE_VER
+				f_getup2datereqver
+				$SQLCMD "update inst set INSTVER='$REMOTE_VER' where INSTALLID='$INSTALLID';"
+				break
 			fi
 		fi
 		#
-	done
+	done ; unset UPDATE_POSTCHECK_COUNTER
 	#
 	UPDATING=0
 	# Remove lockfile
@@ -999,7 +1051,7 @@ f_update() {
 	fi
 	#
 	if [[ "$UPDATER_FAIL" == 1 ]] ; then
-		echoerr "The updater failed. Please see previous errors and warnings for clues on how to fix this."
+		echoerr "The updater failed. Please see previous errors and warnings for more information."
 		echoerr ""
 		f_lockdownmaster ; X_LOCKMASTER="$?" # Lock down the master from writing when done, even if we did fail.
 		return 1
@@ -1015,6 +1067,8 @@ f_autoupdate_warnallactive() {
 	# Warn an active running srcds instances which could be impacted by resource contention.
 	# FIXME: Should probably merge this with f_autoupdate.
 	# 
+	local WARNMESG_TEXT
+	#
 	f_listrunning
 	#
 	# If there are active/running srcds instances, then warn them.
@@ -1039,7 +1093,7 @@ f_autoupdate_warnallactive() {
 			tmux send-keys -t $WARNTARGET "say $WARNMESG_TEXT" C-m
 			tmux send-keys -t $WARNTARGET "sm_csay $WARNMESG_TEXT" C-m
 			echo "  Sent in-game warnings to $WARNTARGET" ) &
-		done
+		done ; unset WARNTARGET
 		wait # Wait for the backgrounded warnings to finish. This is a simple way of doing it in parallel.
 		echo "Done warning active installations."
 	fi
@@ -1048,6 +1102,8 @@ f_autoupdate_warnallactive() {
 f_autoupdate_stopactivechildren() {
 	# Shut down active children prior to updating the srcds master.
 	# FIXME: Should probably merge this with f_autoupdate.
+	#
+	local SHUTDOWN_TEXT
 	#
 	if [[ -z "$ACTIVECHILD_LIST" ]] ; then
 		echo "No active child srcds instances to shut down."
@@ -1068,7 +1124,7 @@ f_autoupdate_stopactivechildren() {
 			sleep 2
 			IN_INSTALLID="$STOPTARGET" ; f_stop 1> /dev/null
 			echo "  $STOPTARGET stopped" ) &
-		done
+		done ; unset STOPTARGET
 		wait # Wait for the backgrounded warnings to finish. This is a simple way of doing it in parallel.
 		echo "Done stopping active installations."
 		echo ""
@@ -1079,10 +1135,13 @@ f_autoupdate() {
 	# Automatically update all installations.
 	# Masters get updates via SteamCMD/HLDSUpdateTool, and linked installs get stopped/relinked/started.
 	#
+	unset AUTOUPDATING
+	local AUTOUPDATE_MAILTO LIST_MASTERS MASTERUPDATE_LIST AUTOUPDATING_SEEN_UPDATES AUTOUPDATE_SLEEP1_COUNTDOWN
+	local CURRENTMASTER IN_INSTALLID GAMETYPE ALLCHILD_LIST ACTIVECHILD_LIST INACTIVECHILD_LIST X_UPDATE_MAIN
+	local AUTOUPDATE_MAIL_SUBJ AUTOUPDATE_MAIL_MESSAGE
 	# Set a global MAILTO address.
 	AUTOUPDATE_MAILTO=$WRENCH_MAILTO
 	#
-	# FIXME: cleanup trap not triggering here. I suspect it is the log redirect via "exec > >" below.
 	# Update lock system for autoupdates.
 	if [[ -f "$AUTOUPDATE_LOCKFILE" ]] ; then
 		echo ""
@@ -1106,11 +1165,13 @@ f_autoupdate() {
 	echo "$MYPID" > "$AUTOUPDATE_LOCKFILE" # Set the autoupdate lockfile.
 	#
 	# This is a dirty hack to tee our stdout and stderr to a logfile.
-	# WARNING: This smushes stderr into stdout and can not be undone.
+	# WARNING: This combines stderr into stdout and can not be undone.
 	if [[ ! -d "$AUTOUPDATE_LOGDIR" ]] ; then
 		mkdir "$AUTOUPDATE_LOGDIR" || { echoerr "ERROR: mkdir \$AUTOUPDATE_LOGDIR failed!" ; }
 	fi
-	exec > >(tee $AUTOUPDATE_LOGFILE) 2>&1
+	# FIXME: cleanup trap not triggering on ctrl+c. I suspect the log redirect via "exec > >" below (confirmed).
+	# https://stackoverflow.com/questions/24111981/how-can-i-achieve-bash-exit-trap-when-exec-ing-another-binary
+	# exec > >(tee $AUTOUPDATE_LOGFILE) 2>&1
 	#
 	echo ""
 	echo "Searching for updates to srcds MASTER installations: "
@@ -1135,7 +1196,7 @@ f_autoupdate() {
 			echoerr ""
 			continue
 		fi
-		echo "$EACH: Local version: $LOCAL_VER"
+		echo "$EACH: Local version: $LOCAL_VER from $INSTVER_METHOD"
 		f_getup2datereqver
 		echo "$EACH: Remote UpToDateCheck URL is: $UPTODATECHECK_URL"
 		if [[ -z "$REMOTE_VER" ]] ; then
@@ -1161,14 +1222,14 @@ f_autoupdate() {
 				MASTERUPDATE_LIST="$MASTERUPDATE_LIST $EACH"
 			fi
 		fi
-	done
+	done ; unset EACH IN_INSTALLID
 	echo "--"
 	echo ""
 	if [[ -z "$MASTERUPDATE_LIST" ]] ; then
 		echo "No MASTER installation requires updating at this time."
 	else
 		# Since we have real work to do, we will record as such, for later use.
-		AUTOUPDATING_SEENUPDATES=1
+		AUTOUPDATING_SEEN_UPDATES=1
 		#
 		# Send an update start notification. The update process itself can take awhile.
 		$MAILER -s "$MAIL_SUBJ_PREFIX autoupdate $RUNID started" $AUTOUPDATE_MAILTO <<-ENDMESSAGE
@@ -1185,7 +1246,7 @@ f_autoupdate() {
 		#
 		echo ""
 		echo "The following MASTER installations require updating: "
-		for EACH in $MASTERUPDATE_LIST ; do echo "  $EACH" ; done
+		for EACH in $MASTERUPDATE_LIST ; do echo "  $EACH" ; done ; unset EACH
 		echo ""
 		#
 		# Sleep for awhile. This is because it I found it common that the UpToDateCheck URL would report an update, but
@@ -1195,12 +1256,12 @@ f_autoupdate() {
 		# Take into consideration the warning sleeps above. In total, we should wait 60-120 seconds?
 		echo -n "Sleeping for $AUTOUPDATE_SLEEP1 seconds:"
 		# sleep "$AUTOUPDATE_SLEEP1"
-		AUTOUPDATE_SLEEP1_COUNTDOWN="$AUTOUPDATE_SLEEP1"
+		declare -i AUTOUPDATE_SLEEP1_COUNTDOWN="$AUTOUPDATE_SLEEP1"
 		while [[ "$AUTOUPDATE_SLEEP1_COUNTDOWN" -gt 0 ]] ; do
 			echo -n "."
 			AUTOUPDATE_SLEEP1_COUNTDOWN=$(( $AUTOUPDATE_SLEEP1_COUNTDOWN - 1))
 			sleep 1
-		done
+		done ; unset AUTOUPDATE_SLEEP1_COUNTDOWN
 		echo "Done"
 		echo ""
 		#
@@ -1208,28 +1269,25 @@ f_autoupdate() {
 		#
 		for CURRENTMASTER in $MASTERUPDATE_LIST ; do
 			# For each master, we need to relink it's children, restart each, etc.
-			#
-			ALLCHILD_LIST="" # All linked children for each master.
-			ACTIVECHILD_LIST="" # All running/active linked children for each master.
-			INACTIVECHILD_LIST="" # All non-running/inactive linked children for each master.
-			GAMETYPE="" # The GAMETYPE for each master. We don't have to reset this like the _LISTs above, but whatever.
-			#
 			echo "Processing master $CURRENTMASTER: "
 			echo ""
 			IN_INSTALLID="$CURRENTMASTER" ; f_loaddbinst # Load the DB info for the installation.
 			if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then continue ; fi
+			# ALLCHILD_LIST = All linked children for each master
 			ALLCHILD_LIST=$($SQLCMD "select INSTALLID from inst where GAMETYPE='$GAMETYPE' and INSTTYPE='linked';")
 			for CHILD in $ALLCHILD_LIST ; do
 				# For each child installation, we need to know if it is or is not currently active.
 				IN_INSTALLID="$CHILD" ; f_loaddbinst ; f_getpid # Load the DB info for the installation.
 				if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then continue ; fi
 				if [[ "$RUNSTATUS" == "running" ]] ; then
+					# ACTIVECHILD_LIST = All running/active linked children for each master.
 					if [[ -z "$ACTIVECHILD_LIST" ]] ; then
 						ACTIVECHILD_LIST="$CHILD"
 					else
 						ACTIVECHILD_LIST="$ACTIVECHILD_LIST $CHILD"
 					fi
 				else
+					# INACTIVECHILD_LIST = All non-running/inactive linked children for each master.
 					# If RUNSTATUS is "crashed" or "error", the installation will be relinked, but it will not get restarted.
 					if [[ -z "$INACTIVECHILD_LIST" ]] ; then
 						INACTIVECHILD_LIST="$CHILD"
@@ -1237,13 +1295,13 @@ f_autoupdate() {
 						INACTIVECHILD_LIST="$INACTIVECHILD_LIST $CHILD"
 					fi
 				fi
-			done
+			done ; unset CHILD IN_INSTALLID
 			if [[ -z "$ACTIVECHILD_LIST" ]] ; then
 				echo "$CURRENTMASTER has no active linked children."
 				echo ""
 			else
 				echo "Active linked children of $CURRENTMASTER: "
-				for EACH in $ACTIVECHILD_LIST ; do echo "  $EACH" ; done
+				for EACH in $ACTIVECHILD_LIST ; do echo "  $EACH" ; done ; unset EACH
 				echo ""
 			fi
 			if [[ -z "$INACTIVECHILD_LIST" ]] ; then
@@ -1251,13 +1309,13 @@ f_autoupdate() {
 				echo ""
 			else
 				echo "Inactive linked children of $CURRENTMASTER: "
-				for EACH in $INACTIVECHILD_LIST ; do echo "  $EACH" ; done
+				for EACH in $INACTIVECHILD_LIST ; do echo "  $EACH" ; done ; unset EACH
 				echo ""
 			fi
 			#
 			# Shut down active/running children.
 			f_autoupdate_stopactivechildren
-				#
+			#
 			# Update the master.
 			echo "Updating master installation: $CURRENTMASTER"
 			IN_INSTALLID="$CURRENTMASTER"
@@ -1271,13 +1329,13 @@ f_autoupdate() {
 					echo "Relinking linked child installation: $EACH"
 					IN_INSTALLID="$EACH"
 					f_relink 1> /dev/null
-				done
+				done ; unset EACH IN_INSTALLID
 				for EACH in $ACTIVECHILD_LIST ; do
 					echo "Relinking and restarting linked child installation: $EACH"
 					IN_INSTALLID="$EACH"
 					f_relink 1> /dev/null
 					f_start 1> /dev/null
-				done
+				done ; unset EACH IN_INSTALLID
 			else
 				echoerr "Marking the installation ALLOWUPDATE=0. This will prevent further update attempts."
 				echoerr "Manual intervention will be required to fix this."
@@ -1286,7 +1344,8 @@ f_autoupdate() {
 			fi
 	
 		echo ""
-		done
+		unset IN_INSTALLID GAMETYPE ALLCHILD_LIST ACTIVECHILD_LIST INACTIVECHILD_LIST
+		done ; unset CURRENTMASTER IN_INSTALLID
 	fi
 	#
 	echo ""
@@ -1295,15 +1354,24 @@ f_autoupdate() {
 	#
 	# FIXME: Need to close the logfile tee.
 	#
-	if [[ ! "$AUTOUPDATING_SEENUPDATES" = 1 ]] ; then
+	if [[ ! "$AUTOUPDATING_SEEN_UPDATES" = 1 ]] ; then
 		# If nothing interesting happened, let's just delete the log file, since we don't care.
 		rm -f "$AUTOUPDATE_LOGFILE"
 	else
-		# Send an email log.
-		$MAILER -s "$MAIL_SUBJ_PREFIX autoupdate $RUNID finished" -a $AUTOUPDATE_LOGFILE $AUTOUPDATE_MAILTO <<-ENDMESSAGE
+		# Send an email with the log file.
+		if [[ "$SEEN_ERRORS" == 1 ]] ; then
+			AUTOUPDATE_MAIL_SUBJ="with errors"
+			AUTOUPDATE_MAIL_MESSAGE="WARNING: Erorrs/warnings seen during update. Please review attached log file."
+		else
+			AUTOUPDATE_MAIL_SUBJ="successfully"
+			AUTOUPDATE_MAIL_MESSAGE="Autoupdate completed successfully. Please review attached log file."
+		fi
+		$MAILER -s "$MAIL_SUBJ_PREFIX autoupdate $RUNID finished $AUTOUPDATE_MAIL_SUBJ" -a $AUTOUPDATE_LOGFILE $AUTOUPDATE_MAILTO <<-ENDMESSAGE
 	
 			Date: $(date)
 			Master Update List: $MASTERUPDATE_LIST
+
+			$AUTOUPDATE_MAIL_MESSAGE
 	
 		ENDMESSAGE
 	fi
@@ -1392,7 +1460,7 @@ f_relink() {
 			# echoerr "DEBUG: 2 $NICECMD find \"$INSTALLDIR/$EACHD\" -type d -empty -delete"
 			$NICECMD find "$INSTALLDIR/$EACHD" -type d -empty -delete
 		fi )
-	done
+	done ; unset EACH EACHD
 	#
 	echo ""
 	echo "Relinking $INSTALLID complete."
@@ -1481,48 +1549,93 @@ f_allorone() {
 }
 
 f_cleandemos() {
-	# Manage SourceTV demo files.
+	# Manage SourceTV demo/autorecord files.
 	# 
-	DEMOARCHIVE="$BASEDIR/demos"
+	local DEMOARCHIVE
+	#
+	DEMOARCHIVE="$GAMEDIR/demos"
+	#
 	echo -n "Cleaning up SourceTV demos: "
+	# If there isn't a "demos" dir to organize our .demo files into, create one.
 	if [[ ! -d "$DEMOARCHIVE" ]] ; then
 			echo ""
 			echo "$DEMOARCHIVE does not exist. Creating it now."
-			$NICECMD mkdir "$DEMOARCHIVE" && chmod 770 "$DEMOARCHIVE"
+			$NICECMD mkdir "$DEMOARCHIVE" && chmod 770 "$DEMOARCHIVE" || { 
+				echoerr "ERROR: Unable to create demos archive."
+				return 1
+			}
 	fi
-	$NICECMD find $DEMOARCHIVE -maxdepth 1 -type f -name "*auto-*.dem.bz2" -mtime +$DEMOSEXPIRE -print0 | xargs -0 -r rm -f
-	$NICECMD find $BASEDIR -maxdepth 1 -type f -name "*auto-*.dem" -cmin +3 -print0 | xargs -0 -r mv $DEMOARCHIVE
-	$NICECMD find $DEMOARCHIVE -maxdepth 1 -type f -name "auto-*.dem" -print0 | xargs -0 -r bzip2
+	# Delete old compressed demos.
+	$NICECMD find $DEMOARCHIVE -maxdepth 1 -type f -name "*auto-*.dem.bz2" -mtime +$DEMOSEXPIRE -exec rm -f '{}' +
+	#
+	# Move newly created demos into the archive.
+	$NICECMD find $GAMEDIR -maxdepth 1 -type f -name "*auto-*.dem" -cmin +3 -exec mv -t $DEMOARCHIVE '{}' +
+	#
+	# Compress demos in the archive.
+	$NICECMD find $DEMOARCHIVE -maxdepth 1 -type f -name "auto-*.dem" -exec bzip2 '{}' \;
+	#
 	echo "Done"
 }
 
 f_cleanlogs() {
 	# Manage logfiles.
+	# There are lots of different logs. There's the "log" files, the "con_logfile" files, SourceMod log files, and wrench itself may write a log.
 	#
-	LOGARCHIVE="$BASEDIR/logs"
+	local LOGARCHIVE
+	#
+	LOGARCHIVE="$GAMEDIR/logs"
+	#
 	echo -n "Cleaning up logfiles: "
 	if [[ ! -d "$LOGARCHIVE" ]] ; then
 			echo ""
 			echo "$LOGARCHIVE does not exist. Creating it now."
-			$NICECMD mkdir "$LOGARCHIVE" && chmod 770 "$LOGARCHIVE"
+			$NICECMD mkdir "$LOGARCHIVE" && chmod 770 "$LOGARCHIVE" || {
+				echoerr "ERROR: Unable to create log archive."
+				return 1
+			}
 	fi
-	$NICECMD find $LOGARCHIVE -maxdepth 1 -type f -name "*.log.bz2" -mtime +$LOGSEXPIRE -print0 | xargs -0 -r rm -f
-	if [[ -f $BASEDIR/console.log ]] ; then
-		# Note that the timestamp on the log file is from when it is closed, not opened. Might want to change this?
-		$NICECMD cp -ap -n $BASEDIR/console.log $LOGARCHIVE/console-$(date +%Y%m%d%H%M%S).log && echo "" > $BASEDIR/console.log
+	# Delete old compressed logs.
+	$NICECMD find $LOGARCHIVE -maxdepth 1 -type f -name "*.log.bz2" -mtime +$LOGSEXPIRE -exec rm -f '{}' +
+	#
+	# The console log is special in that it is never closed by the srcds server. We must copy it and then clear it until the next rotation.
+	if [[ -f $GAMEDIR/console.log ]] ; then
+		# Note that the timestamp on the log file is from when we collect it, not when it was opened/created.
+		$NICECMD cp -ap -n $GAMEDIR/console.log $LOGARCHIVE/console-$(date +%Y%m%d%H%M%S).log && echo "" > $GAMEDIR/console.log
 	fi
-	$NICECMD find $LOGARCHIVE -maxdepth 1 -type f -name "*.log" -mtime +1 -print0 | xargs -0 -r bzip2
+	#
+	# Compress log files.
+	$NICECMD find $LOGARCHIVE -maxdepth 1 -type f -name "*.log" -mtime +1 -exec bzip2 '{}' \;
+	#
+	# Handle CSGO's backup_round files, which are a sort of log (backup_round01.txt, backup_round02.txt,...).
+	if [[ "$GAMEYTPE" == csgo ]] ; then
+		# Delete the old files.
+		$NICECMD find $LOGARCHIVE -maxdepth 1 -type f -name "*.txt.bz2" -mtime +$LOGSEXPIRE -exec rm -f '{}' +
+		# Move the new files into the archive.
+		$NICECMD find $GAMEDIR -maxdepth 1 -type f -name "backup_round*.txt" -cmin +3 -exec mv -t $LOGARCHIVE '{}' +
+		# Compress the archive.
+		$NICECMD find $LOGARCHIVE -maxdepth 1 -type f -name "backup_round*.txt" -mtime +1 -exec bzip2 '{}' \;
+	fi
+	#
+	# wrench itself writes logs under certain conditions.
+	CLEANUP_CAPTUREPANE_LOGS=0 # Set to 1 to clean up at the same schedule as other logs.
+	if [[ "$CLEANUP_CAPTUREPANE_LOGS" == 1 ]] ; then
+		$NICECMD find $INSTALLDIR -maxdepth 1 -type f -name "crash_capture-pane_[0-9]*-[0-9]*.log" -mtime +$LOGSEXPIRE -exec rm -f '{}' +
+		$NICECMD find $INSTALLDIR -maxdepth 1 -type f -name "debug_capture-pane_[0-9]*-[0-9]*.log" -mtime +$LOGSEXPIRE -exec rm -f '{}' +
+	fi
+	#
 	echo "Done"
 }
 
 f_cleandownloads() {
-	# Clean up downloads files.
+	# Clean up downloads files. This usually means sprays.
 	#
-	if [[ -d "$BASEDIR/download/user_custom" ]] ; then
+	if [[ -d "$GAMEDIR/download/user_custom" ]] ; then
 		echo -n "Cleaning up download/user_custom files: "
-		$NICECMD find $BASEDIR/download/user_custom -maxdepth 2 -type f -name "????????.dat" -mtime +$DOWNLOADSEXPIRE -print0 | xargs -0 -r rm -f
+		# Delete old cache files.
+		$NICECMD find $GAMEDIR/download/user_custom -maxdepth 2 -type f -name "????????.dat" -mtime +$DOWNLOADSEXPIRE -exec rm -f '{}' +
+		$NICECMD find $GAMEDIR/download/user_custom -maxdepth 2 -type f -name "*.ztmp" -mtime +$DOWNLOADSEXPIRE -exec rm -f '{}' +
 		# Also delete empty directories
-		$NICECMD find $BASEDIR/download/user_custom -maxdepth 1 -type d -empty -delete
+		$NICECMD find $GAMEDIR/download/user_custom -mindepth 1 -maxdepth 1 -type d -empty -delete
 		echo "Done"
 	fi
 }
@@ -1535,98 +1648,123 @@ f_cleanreplays() {
 		return 0
 	fi
 	echo -n "Cleaning up replay files: "
-	if [[ -d "$BASEDIR/replay/server/blocks" ]] ; then
-		$NICECMD find $BASEDIR/replay/server/blocks -maxdepth 1 -type f -name "*.dmx" -mtime +$REPLAYSEXPIRE -print0 | xargs -0 -r rm -f
-		$NICECMD find $BASEDIR/replay/server/sessions -maxdepth 1 -type f -name "*.dmx" -mtime +$REPLAYSEXPIRE -print0 | xargs -0 -r rm -f
+	if [[ -d "$GAMEDIR/replay/server/blocks" ]] ; then
+		$NICECMD find $GAMEDIR/replay/server/blocks -maxdepth 1 -type f -name "*.dmx" -mtime +$REPLAYSEXPIRE -exec rm -f '{}' +
+		$NICECMD find $GAMEDIR/replay/server/sessions -maxdepth 1 -type f -name "*.dmx" -mtime +$REPLAYSEXPIRE -exec rm -f '{}' +
 	fi
 	# Clean up the public-accessible www dir
 	if [[ -d "$REPLAYBASEDIR/$CLEANTARGET/replay" ]] ; then
-		$NICECMD find $REPLAYBASEDIR/$CLEANTARGET/replay -maxdepth 1 -type f -name "*.dmx" -mtime +$REPLAYSEXPIRE -print0 | xargs -0 -r rm -f
-		$NICECMD find $REPLAYBASEDIR/$CLEANTARGET/replay -maxdepth 1 -type f -name "*.block" -mtime +$REPLAYSEXPIRE -print0 | xargs -0 -r rm -f
+		$NICECMD find $REPLAYBASEDIR/$CLEANTARGET/replay -maxdepth 1 -type f -name "*.dmx" -mtime +$REPLAYSEXPIRE -exec rm -f '{}' +
+		$NICECMD find $REPLAYBASEDIR/$CLEANTARGET/replay -maxdepth 1 -type f -name "*.block" -mtime +$REPLAYSEXPIRE -exec rm -f '{}' +
 	fi
 	echo "Done"
 }
 
-f_autocleanup() {
-	# Automatically clean up installations marked via the "AUTOCLEAN" column in the inst table.
+f_cleaninstall() {
+	# "Clean" an installation by deleting old cache files, compressing and rotating logs/demos, et-cetera.
+	# FIXME: We need a persistant failure variable, like SEEN_CLEANUP_FAIL and return 1 if seen anywhere in any sub fuc.
 	#
-	# FIXME: This entire func and it's subfuncs need review. This stuff is old and came from the old srcds-control.
-	# FIXME: Add a lockfile for autocleanup, just like autoupdate.
+	local CLEANTARGET
+	#
+	CLEANTARGET="$IN_INSTALLID"
+	#
+	f_loaddbinst
+	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
+	#
+	# Never try to clean a master install.
+	if [[ "$INSTTYPE" == master ]] ; then
+		[[ "$SEEN_AUTOCLEAN" == 1 ]] || echoerr ""
+		echoerr "ERROR: Can not clean $CLEANTARGET because it is a $INSTTYPE type installation."
+		[[ "$SEEN_AUTOCLEAN" == 1 ]] || echoerr ""
+		return 1
+	fi
+	# Validate the GAMEDIR before proceeding.
+	if [[ ! -d "$GAMEDIR" ]] ; then
+		[[ "$SEEN_AUTOCLEAN" == 1 ]] || echoerr ""
+		echoerr "ERROR: GAMEDIR for \"$CLEANTARGET\" not found. Unable to clean installation."
+		[[ "$SEEN_AUTOCLEAN" == 1 ]] || echoerr ""
+		return 1
+	fi
+	#
+	[[ "$SEEN_AUTOCLEAN" == 1 ]] || echo ""
+	# echoerr "DEBUG: Cleanup target $CLEANTARGET GAMETYPE=$GAMETYPE"
 	# 
+	# cd to /tmp for safety reasons.
+	cd /tmp
+	#
+	# Each GAMETYPE is different. For example, only TF2 supports replays at this time.
+	case "$GAMETYPE" in
+		'css')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+			f_cleandownloads
+		;;
+		'hl2dm')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+			f_cleandownloads
+		;;
+		'l4d')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+		;;
+		'l4d2')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+		;;
+		'tf2')
+			echo "cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+			f_cleandownloads
+			f_cleanreplays
+		;;
+		'fof')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+			f_cleandownloads
+		;;
+		'csgo')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleandemos
+			f_cleanlogs
+		;;
+		'gmod')
+			echo "Cleaning up $CLEANTARGET... "
+			f_cleanlogs
+			f_cleandownloads
+		;;
+		*)
+			[[ "$SEEN_AUTOCLEAN" == 1 ]] || echoerr ""
+			echoerr "$CLEANTARGET: GAMETYPE \"$GAMETYPE\" not supported for cleanup."
+			[[ "$SEEN_AUTOCLEAN" == 1 ]] || echoerr ""
+			return 2
+	esac
+	#
+	echo "Finished cleaning $CLEANTARGET."
+	[[ "$SEEN_AUTOCLEAN" == 1 ]] || echo ""
+}
+
+f_autocleanup() {
+	# Automatically cleans up all installations marked via the "AUTOCLEAN" column in the inst table.
+	#
+	local AUTOCLEANUP_LIST 
+	#
 	# Get the full list of runnable srcds installs. Excludes masters, then figure out which should be cleaned.
 	AUTOCLEANUP_LIST=$($SQLCMD "select INSTALLID from inst where AUTOCLEANUP='1' and not INSTTYPE='master';")
-	# echoerr "DEBUG: cleanup target list is: $AUTOCLEANUP_LIST"
-	for EACH in $AUTOCLEANUP_LIST ; do
-		# FIXME: We don't f_loaddbinst here, but probably should.
-		#   If we do load the inst table, we need to move BASEDIR declarations into f_loaddbinst.
-		( CLEANTARGET=$EACH
-		CLEANTARGETPATH=$APPDIR/$CLEANTARGET
-		GAMETYPE=$($SQLCMD "select GAMETYPE from inst where INSTALLID='$CLEANTARGET';")
-		#
-		# Validate the installation directory before proceeding.
-		if [[ ! -d "$CLEANTARGETPATH" ]] ; then
-			echoerr ""
-			echoerr "ERROR: Installation directory for \"$CLEANTARGET\" not found."
-			echoerr "  Continuing on to next target."
-			echoerr ""
-			continue
-		fi
-		# echo "DEBUG: Cleanup target $CLEANTARGET GAMETYPE is $GAMETYPE"
-		# 
-		# cd to /tmp for safety reasons.
-		cd /tmp
-		#
-		# FIXME: BASEDIR probably needs to be in the db rather than here.
-		case "$GAMETYPE" in
-			'css')
-				BASEDIR=$CLEANTARGETPATH/cstrike
-				echo "Cleaning up $CLEANTARGET"
-				f_cleandemos
-				f_cleanlogs
-				f_cleandownloads
-			;;
-			'hl2dm')
-				BASEDIR=$CLEANTARGETPATH/hl2mp
-				echo "Cleaning up $CLEANTARGET"
-				f_cleandemos
-				f_cleanlogs
-				f_cleandownloads
-			;;
-			'l4d')
-				BASEDIR=$CLEANTARGETPATH/left4dead
-				echo "Cleaning up $CLEANTARGET"
-				f_cleandemos
-				f_cleanlogs
-			;;
-			'l4d2')
-				BASEDIR=$CLEANTARGETPATH/left4dead2
-				echo "Cleaning up $CLEANTARGET"
-				f_cleandemos
-				f_cleanlogs
-			;;
-			'tf2')
-				BASEDIR=$CLEANTARGETPATH/tf
-				echo "cleaning up $CLEANTARGET"
-				f_cleandemos
-				f_cleanlogs
-				f_cleandownloads
-				f_cleanreplays
-			;;
-			'fof')
-				BASEDIR=$CLEANTARGETPATH/fof
-				echo "Cleaning up $CLEANTARGET"
-				f_cleandemos
-				f_cleanlogs
-				f_cleandownloads
-			;;
-			# FIXME: CSGO needs to be added.
-			*)
-				echo "$CLEANTARGET: GAMETYPE \"$GAMETYPE\" not supported for cleanup."
-		esac
-		#
-		echo "Done cleaning up $CLEANTARGET."
-		echo "" )
-	done
+	# echoerr "DEBUG: autocleanup target list is: $AUTOCLEANUP_LIST"
+	SEEN_AUTOCLEAN=1 # Fix spacing when looping via autoclean
+	for AUTOCLEANTARGET in $AUTOCLEANUP_LIST ; do
+		IN_INSTALLID="$AUTOCLEANTARGET"
+		echo ""
+		f_cleaninstall
+	done ; unset AUTOCLEANTARGET
+	echo ""
 }
 
 f_lockcheck() {
@@ -1646,6 +1784,8 @@ f_lockcheck() {
 f_uninstall() {
 	# Uninstall/remove a server instance.
 	# FIXME: This entire process needs review.
+	#
+	local INSTALLATIONS_LIST INSTALLATIONS_LIST UNINSTALL_SELECT IN_INSTALLID X_INSTDBDELETE X_UNLOCKMASTER
 	#
 	echo ""
 	echo "This will completely remove a srcds installation, including the database entry and installation directory."
@@ -1734,6 +1874,8 @@ f_uninstall() {
 f_deletegametype() {
 	# FIXME: This is not yet used.
 	# Delete a GAMETYPE from the srcinfo table.
+	#
+	local GAMETYPES_LIST GAMETYPEDEPENDANCY_LIST X_DELETEGAMETYPE
 	#
 	echo ""
 	echo "This process will delete a srcds game type from the database."
@@ -1850,13 +1992,15 @@ f_choosename() {
 			fi
 
 		fi
-	done
+	done ; unset INSTALLID_CHECK
 }
 
 f_configinstall() {
 	# Configure an installation. We may be installing a new install, or reconfiguring an existing one.
 	# We get called by either f_installnewlinked or f_reconfig.
 	#Note that master installs have their own function, f_installnewmaster, for NEW installs, but can be reconfigured.
+	#
+	local X_INSTALLDBINSERT X_RECONFIGINST
 	#
 	# If configuring as new(install), then use the srcinfo INSTDEF_.
 	# If configuring as a reconfig(reconfig), then use the existing info from the DB.
@@ -1876,7 +2020,7 @@ f_configinstall() {
 		HIPCHATNOTIFY=$INSTDEF_HIPCHATNOTIFY
 		MAILTO=$INSTDEF_MAILTO
 		STARTBIN=$INSTDEF_STARTBIN
-		EVALTXT_STARTBINARGS=$INSTDEF_STARTBINARGS # Note the difference here.
+		EVALTXT_STARTBINARGS=$INSTDEF_STARTBINARGS
 		RECOVER_CRASH_ENABLE="$INSTDEF_RECOVER_CRASH_ENABLE"
 		RECOVER_WATCHDOG_ENABLE="$INSTDEF_RECOVER_WATCHDOG_ENABLE"
 		RECOVER_WATCHDOG_TEST_INTERVAL="$INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL"
@@ -1886,26 +2030,28 @@ f_configinstall() {
 		INSTTYPE="linked" # We need to specify that this will be a linked install for new linked installations.
 	elif [[ "$IN_ARG" == "reconfig" ]] ; then
 		# f_reconfig should have already called f_loaddbinst, but we set IN_ params to defaults. This is important for master reconfigs.
-		IN_IPADDR=$IPADDR
-		IN_CLIENTPORT=$CLIENTPORT
-		IN_HOSTPORT=$HOSTPORT
-		IN_TVPORT=$TVPORT
-		IN_STEAMPORT=$STEAMPORT
-		IN_ALLOWUPDATE=$ALLOWUPDATE
-		IN_ALLOWSTART=$ALLOWSTART
-		IN_BOOTSTART=$BOOTSTART
-		IN_AUTOCLEANUP=$AUTOCLEANUP
-		IN_MAILNOTIFY=$MAILNOTIFY
-		IN_HIPCHATNOTIFY=$HIPCHATNOTIFY
-		IN_MAILTO=$MAILTO
-		IN_STARTBIN=$STARTBIN
-		IN_STARTBINARGS=$EVALTXT_STARTBINARGS # Note the difference here.
-		IN_RECOVER_CRASH_ENABLE="$RECOVER_CRASH_ENABLE"
-		IN_RECOVER_WATCHDOG_ENABLE="$RECOVER_WATCHDOG_ENABLE"
-		IN_RECOVER_WATCHDOG_TEST_INTERVAL="$RECOVER_WATCHDOG_TEST_INTERVAL"
-		IN_RECOVER_WATCHDOG_POLL_MAX="$RECOVER_WATCHDOG_POLL_MAX"
-		IN_RECOVER_WATCHDOG_START_WAIT="$RECOVER_WATCHDOG_START_WAIT"
-		IN_RECOVER_SLEEP="$RECOVER_SLEEP"
+		# We should be using the DB_ values here, not the resulting values. For example, MAILTO might be changed when it should not be.
+		IPADDR=$DB_IPADDR
+		CLIENTPORT=$DB_CLIENTPORT
+		HOSTPORT=$DB_HOSTPORT
+		TVPORT=$DB_TVPORT
+		STEAMPORT=$DB_STEAMPORT
+		ALLOWUPDATE=$DB_ALLOWUPDATE
+		ALLOWSTART=$DB_ALLOWSTART
+		BOOTSTART=$DB_BOOTSTART
+		AUTOCLEANUP=$DB_AUTOCLEANUP
+		MAILNOTIFY=$DB_MAILNOTIFY
+		MAILTO=$DB_MAILTO
+		STARTBIN=$DB_STARTBIN
+		EVALTXT_STARTBINARGS=$DB_STARTBINARGS
+		RECOVER_CRASH_ENABLE="$DB_RECOVER_CRASH_ENABLE"
+		RECOVER_WATCHDOG_ENABLE="$DB_RECOVER_WATCHDOG_ENABLE"
+		RECOVER_WATCHDOG_TEST_INTERVAL="$DB_RECOVER_WATCHDOG_TEST_INTERVAL"
+		RECOVER_WATCHDOG_POLL_MAX="$DB_RECOVER_WATCHDOG_POLL_MAX"
+		RECOVER_WATCHDOG_START_WAIT="$DB_RECOVER_WATCHDOG_START_WAIT"
+		RECOVER_SLEEP="$DB_RECOVER_SLEEP"
+		INSTVER="$DB_INSTVER"
+		INSTVER_METHOD="$DB_INSTVER_METHOD"
 	fi
 	#
 	case "$INSTTYPE" in 'linked')
@@ -1915,7 +2061,7 @@ f_configinstall() {
 		echo "  NOTE: The following IP addresses were found on this host: "
 		for EACH in $(ip route show table local 2> /dev/null | egrep "^local " | cut -f 2 -d " " | egrep -v "^127\.0\." | sort -V | uniq) ; do
 			echo "    $EACH"
-		done
+		done ; unset EACH
 		echo ""
 		while read -e -r -p "IPADDR: " -i "$IPADDR" IN_IPADDR ; do
 			# Filter invalid characters and validate input.
@@ -2237,29 +2383,63 @@ f_configinstall() {
 		echo ""
 	esac
 	#
+	case "$INSTTYPE" in 'master')
+		echo "What is the installation's game version?"
+		while read -e -r -p "INSTVER: " -i "$INSTVER" IN_INSTVER ; do
+			# Filter invalid characters and validate input.
+			IN_INSTVER=$(echo "$IN_INSTVER" | tr -c -d '[:digit:]')
+			if [[ -z "$IN_INSTVER" ]] || ( echo "$IN_INSTVER" | egrep -v "^[0-9]+$" &> /dev/null ) ; then
+			       echo ""
+			       echo "Invalid input detected. Try again."
+			else
+			       break
+			fi
+			break
+		done
+		echo ""
+	esac
+	#
+	case "$INSTTYPE" in 'master')
+		echo "What is the installation's game version tracking method? (db or steaminf)"
+		while read -e -r -p "INSTVER_METHOD: " -i "$INSTVER_METHOD" IN_INSTVER_METHOD ; do
+			# Filter invalid characters and validate input.
+			IN_INSTVER_METHOD=$(echo "$IN_INSTVER_METHOD" | tr -c -d '[:alnum:]')
+			if [[ -z "$IN_INSTVER_METHOD" ]] || ( echo "$IN_INSTVER_METHOD" | egrep -v "^db$|^steaminf$" &> /dev/null ) ; then
+			       echo ""
+			       echo "Invalid input detected. Try again."
+			else
+			       break
+			fi
+			break
+		done
+		echo ""
+	esac
+	#
 	# User then reviews the info and confirms.
 	echo "Please confirm: Is the following information correct?"
 	echo ""
-	( echo "  IP Address|:|$IN_IPADDR"
-	echo "  Host Port|:|$IN_HOSTPORT"
-	echo "  Client Port|:|$IN_CLIENTPORT"
-	echo "  TV Port|:|$IN_TVPORT"
-	echo "  Steam Port|:|$IN_STEAMPORT"
-	echo "  Allow Update|:|$IN_ALLOWUPDATE"
-	echo "  Allow Autostart|:|$IN_ALLOWSTART"
-	echo "  Allow Bootstart|:|$IN_BOOTSTART"
-	echo "  Auto-Cleanup|:|$IN_AUTOCLEANUP"
-	echo "  Allow Mail Notifications|:|$IN_MAILNOTIFY"
-	echo "  Allow Hipchat Notifications|:|$IN_HIPCHATNOTIFY"
-	echo "  Email Address|:|$IN_MAILTO"
-	echo "  Recovery Crash Enable|:|$IN_RECOVER_CRASH_ENABLE"
-	echo "  Recovery Watchdog Enable|:|$IN_RECOVER_WATCHDOG_ENABLE"
-	echo "  Recovery Watchdog Test Interval|:|$IN_RECOVER_WATCHDOG_TEST_INTERVAL"
-	echo "  Recovery Watchdog Max Tests|:|$IN_RECOVER_WATCHDOG_POLL_MAX"
-	echo "  Recovery Watchdog Start Wait|:|$IN_RECOVER_WATCHDOG_START_WAIT"
-	echo "  Recovery Delay|:|$IN_RECOVER_SLEEP"
-	echo "  Startup Binary|:|$IN_STARTBIN"
-	echo "  Startup Arguments|:|$IN_STARTBINARGS"
+	( [[ "$INSTTYPE" == linked ]] && echo "  IP Address|:|$IN_IPADDR"
+    [[ "$INSTTYPE" == linked ]] && echo "  Host Port|:|$IN_HOSTPORT"
+	[[ "$INSTTYPE" == linked ]] && echo "  Client Port|:|$IN_CLIENTPORT"
+	[[ "$INSTTYPE" == linked ]] && echo "  TV Port|:|$IN_TVPORT"
+	[[ "$INSTTYPE" == linked ]] && echo "  Steam Port|:|$IN_STEAMPORT"
+	[[ "$INSTTYPE" =~ ^linked$|^master$ ]] && echo "  Allow Update|:|$IN_ALLOWUPDATE"
+	[[ "$INSTTYPE" == linked ]] && echo "  Allow Autostart|:|$IN_ALLOWSTART"
+	[[ "$INSTTYPE" == linked ]] && echo "  Allow Bootstart|:|$IN_BOOTSTART"
+	[[ "$INSTTYPE" == linked ]] && echo "  Auto-Cleanup|:|$IN_AUTOCLEANUP"
+	[[ "$INSTTYPE" == linked ]] && echo "  Allow Notifications|:|$IN_MAILNOTIFY"
+    [[ "$INSTTYPE" == linked ]] && echo "  Allow Hipchat Notifications|:|$IN_HIPCHATNOTIFY"
+	[[ "$INSTTYPE" == linked ]] && echo "  Email Address|:|$IN_MAILTO"
+	[[ "$INSTTYPE" == linked ]] && echo "  Recovery Crash Enable|:|$IN_RECOVER_CRASH_ENABLE"
+	[[ "$INSTTYPE" == linked ]] && echo "  Recovery Watchdog Enable|:|$IN_RECOVER_WATCHDOG_ENABLE"
+	[[ "$INSTTYPE" == linked ]] && echo "  Recovery Watchdog Test Interval|:|$IN_RECOVER_WATCHDOG_TEST_INTERVAL"
+	[[ "$INSTTYPE" == linked ]] && echo "  Recovery Watchdog Max Tests|:|$IN_RECOVER_WATCHDOG_POLL_MAX"
+	[[ "$INSTTYPE" == linked ]] && echo "  Recovery Watchdog Start Wait|:|$IN_RECOVER_WATCHDOG_START_WAIT"
+	[[ "$INSTTYPE" == linked ]] && echo "  Recovery Delay|:|$IN_RECOVER_SLEEP"
+	[[ "$INSTTYPE" == linked ]] && echo "  Startup Binary|:|$IN_STARTBIN"
+	[[ "$INSTTYPE" == linked ]] && echo "  Startup Arguments|:|$IN_STARTBINARGS"
+	[[ "$INSTTYPE" == master ]] && echo "  Installation Version|:|$IN_INSTVER"
+	[[ "$INSTTYPE" == master ]] && echo "  Installation Version Method|:|$IN_INSTVER_METHOD"
 	) | column -t -s "|"
 	echo ""
 	echo "Would you like to proceed with recording these values?"
@@ -2289,7 +2469,7 @@ f_configinstall() {
 		fi
 	elif [[ "$IN_ARG" == "reconfig" ]] ; then
 		echo -n "Registering the installation's new config into the database: "
-		$SQLCMD "update inst set IPADDR='$IN_IPADDR', CLIENTPORT='$IN_CLIENTPORT', HOSTPORT='$IN_HOSTPORT', TVPORT='$IN_TVPORT', STEAMPORT='$IN_STEAMPORT', ALLOWUPDATE='$IN_ALLOWUPDATE', ALLOWSTART='$IN_ALLOWSTART', BOOTSTART='$IN_BOOTSTART', AUTOCLEANUP='$IN_AUTOCLEANUP', MAILNOTIFY='$IN_MAILNOTIFY', HIPCHATNOTIFY='$IN_HIPCHATNOTIFY', MAILTO='$IN_MAILTO', STARTBIN='$IN_STARTBIN', STARTBINARGS='$IN_STARTBINARGS', RECOVER_CRASH_ENABLE='$IN_RECOVER_CRASH_ENABLE', RECOVER_WATCHDOG_ENABLE='$IN_RECOVER_WATCHDOG_ENABLE', RECOVER_WATCHDOG_TEST_INTERVAL='$IN_RECOVER_WATCHDOG_TEST_INTERVAL', RECOVER_WATCHDOG_POLL_MAX='$IN_RECOVER_WATCHDOG_POLL_MAX', RECOVER_WATCHDOG_START_WAIT='$IN_RECOVER_WATCHDOG_START_WAIT', RECOVER_SLEEP='$IN_RECOVER_SLEEP' where INSTALLID='$IN_INSTALLID';"
+		$SQLCMD "update inst set IPADDR='$IN_IPADDR', CLIENTPORT='$IN_CLIENTPORT', HOSTPORT='$IN_HOSTPORT', TVPORT='$IN_TVPORT', STEAMPORT='$IN_STEAMPORT', ALLOWUPDATE='$IN_ALLOWUPDATE', ALLOWSTART='$IN_ALLOWSTART', BOOTSTART='$IN_BOOTSTART', AUTOCLEANUP='$IN_AUTOCLEANUP', MAILNOTIFY='$IN_MAILNOTIFY', HIPCHATNOTIFY='$IN_HIPCHATNOTIFY', MAILTO='$IN_MAILTO', STARTBIN='$IN_STARTBIN', STARTBINARGS='$IN_STARTBINARGS', RECOVER_CRASH_ENABLE='$IN_RECOVER_CRASH_ENABLE', RECOVER_WATCHDOG_ENABLE='$IN_RECOVER_WATCHDOG_ENABLE', RECOVER_WATCHDOG_TEST_INTERVAL='$IN_RECOVER_WATCHDOG_TEST_INTERVAL', RECOVER_WATCHDOG_POLL_MAX='$IN_RECOVER_WATCHDOG_POLL_MAX', RECOVER_WATCHDOG_START_WAIT='$IN_RECOVER_WATCHDOG_START_WAIT', RECOVER_SLEEP='$IN_RECOVER_SLEEP', INSTVER='$IN_INSTVER', INSTVER_METHOD='$IN_INSTVER_METHOD' where INSTALLID='$IN_INSTALLID';"
 		X_RECONFIGINST=$?
 		if [[ ! "$X_RECONFIGINST" == 0 ]] ; then
 			echoerr ""
@@ -2305,6 +2485,8 @@ f_configinstall() {
 
 f_installnewlinked() {
 	# Create a new linked/child installation.
+	#
+	local X_CONFIGINSTALL X_INSTALLMKDIR
 	#
 	# We must have a master installation of the same GAMETYPE which can be used. Otherwise, it must be installed.
 	if [[ -z "$USEMASTER" ]] ; then
@@ -2369,6 +2551,8 @@ f_installnewlinked() {
 	echo ""
 	echo "Linked installation completed."
 	echo ""
+	echo "Remember to add your custom configuration (autoexec.cfg, server.cfg, -exec, et-cetera). Your installation won't run properly without it."
+	echo ""
 	return 0
 }
 
@@ -2377,6 +2561,9 @@ f_installnewmaster() {
 	# This assumes that the srcinfo table row exists for this game type.
 	# The GAMETYPE can be read in as IN_INSTALLGAMETYPE.
 	# We should have gotten here via f_installnewlinked, so go read that for reference.
+	#
+	local X_INSTALLMASTERGETINFO X_NEWMASTERDBINSERT X_UPDATE_MAIN
+	local NEWMASTER_INSTALLID NEWMASTER_GAMETYPE NEWMASTER_GAMENAME NEWMASTER_UPDATER NEWMASTER_HLDSID NEWMASTER_SERVER_APPID
 	#
 	echo ""
 	# Get the info we need from the srcinfo database.
@@ -2420,7 +2607,7 @@ f_installnewmaster() {
 	#
 	# Insert the new inst table record. A number of fields get set null/empty/sane specifically for master installations.
 	echo -n "Registering the master installation into the database: "
-	$SQLCMD "insert into 'inst' (INSTALLID, GAMETYPE, INSTTYPE, IPADDR, CLIENTPORT, HOSTPORT, TVPORT, STEAMPORT, ALLOWUPDATE, ALLOWSTART, BOOTSTART, AUTOCLEANUP, MAILNOTIFY, HIPCHATNOTIFY, MAILTO, STARTBIN, STARTBINARGS) values ('$NEWMASTER_INSTALLID', '$NEWMASTER_GAMETYPE', 'master', '', '', '', '', '', '1', '0', '0', '0', '', '', '', '', '' );"
+	$SQLCMD "insert into 'inst' (INSTALLID, GAMETYPE, INSTTYPE, IPADDR, CLIENTPORT, HOSTPORT, TVPORT, STEAMPORT, ALLOWUPDATE, ALLOWSTART, BOOTSTART, AUTOCLEANUP, MAILNOTIFY, HIPCHATNOTIFY, MAILTO, STARTBIN, STARTBINARGS, INSTVER, INSTVER_METHOD) values ('$NEWMASTER_INSTALLID', '$NEWMASTER_GAMETYPE', 'master', '', '', '', '', '', '1', '0', '0', '0', '', '', '', '', '', '0', 'db' );"
 	X_NEWMASTERDBINSERT=$?
 	echo "Done"
 	if [[ ! "$X_NEWMASTERDBINSERT" == 0 ]] ; then
@@ -2457,12 +2644,13 @@ f_installnewmaster() {
 }
 
 f_changegametype() {
-	# FIXME: this needs lots of testing.
-	# FIXME: Doing a ctrl+c is breaking the terminal and requires a reset. Need to fix that.
+	# FIXME: this needs lots of review. 
 	#
 	# FIXME: Need to validate input. For example, GAMENAME "Garry's Mod" blows up the SQLite insert command.
 	#
 	# Configure a game type. We may be installing a new game type for a newinstall, or reconfiguring an existing one.
+	#
+	local X_INSTALLDBGAMETYPE X_CHANGEGAMETYPE
 	#
 	# If configuring as new, then use supplied defaults.
 	# If configuring as a reconfig, then use the existing info from the DB.
@@ -2702,7 +2890,7 @@ f_changegametype() {
 	( for EACH in GAMETYPE GAMENAME UPDATER HLDSID SERVER_APPID CLIENT_APPID GAMEARG BINDIRSUBD STEAMINF INSTDEF_IPADDR INSTDEF_CLIENTPORT INSTDEF_HOSTPORT INSTDEF_TVPORT INSTDEF_STEAMPORT INSTDEF_ALLOWUPDATE INSTDEF_ALLOWSTART INSTDEF_BOOTSTART INSTDEF_AUTOCLEANUP INSTDEF_MAILNOTIFY INSTDEF_HIPCHATNOTIFY INSTDEF_MAILTO INSTDEF_RECOVER_CRASH_ENABLE INSTDEF_RECOVER_WATCHDOG_ENABLE INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL INSTDEF_RECOVER_WATCHDOG_POLL_MAX INSTDEF_RECOVER_WATCHDOG_START_WAIT INSTDEF_RECOVER_SLEEP INSTDEF_STARTBIN INSTDEF_STARTBINARGS ; do
 		IN_NEW_EACH="IN_NEW_${EACH}"
 		echo "  ${EACH}|:|${!IN_NEW_EACH}"
-	done
+	done ; unset EACH IN_NEW_EACH
 	) | column -t -s "|"
 	#
 	echo ""
@@ -2719,7 +2907,7 @@ f_changegametype() {
 	if [[ "$GAMETYPE_ARG" == "add" ]] ; then
 		echo ""
 		echo -n "Registering the new game type into the database: "
-		$SQLCMD "insert into 'srcinfo' (GAMETYPE, GAMENAME, UPDATER, HLDSID, SERVER_APPID, CLIENT_APPID, GAMEARG, BINDIRSUBD, STEAMINF, INSTDEF_IPADDR, INSTDEF_CLIENTPORT, INSTDEF_HOSTPORT, INSTDEF_TVPORT, INSTDEF_STEAMPORT, INSTDEF_ALLOWUPDATE, INSTDEF_ALLOWSTART, INSTDEF_BOOTSTART, INSTDEF_AUTOCLEANUP, INSTDEF_MAILNOTIFY, INSTDEF_HIPCHATNOTIFY, INSTDEF_MAILTO, INSTDEF_RECOVER_CRASH_ENABLE, INSTDEF_RECOVER_WATCHDOG_ENABLE, INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL, INSTDEF_RECOVER_WATCHDOG_POLL_MAX, INSTDEF_RECOVER_WATCHDOG_START_WAIT, INSTDEF_RECOVER_SLEEP, INSTDEF_STARTBIN, INSTDEF_STARTBINARGS) values ('$IN_NEW_GAMETYPE', '$IN_NEW_GAMENAME', '$IN_NEW_UPDATER', '$IN_NEW_HLDSID', '$IN_NEW_SERVER_APPID', '$IN_NEW_CLIENT_APPID', '$IN_NEW_GAMEARG', '$IN_NEW_BINDIRSUBD', '$IN_NEW_STEAMINF', '$IN_NEW_INSTDEF_IPADDR', '$IN_NEW_INSTDEF_CLIENTPORT', '$IN_NEW_INSTDEF_HOSTPORT', '$IN_NEW_INSTDEF_TVPORT', '$IN_NEW_INSTDEF_STEAMPORT', '$IN_NEW_INSTDEF_ALLOWUPDATE', '$IN_NEW_INSTDEF_ALLOWSTART', '$IN_NEW_INSTDEF_BOOTSTART', '$IN_NEW_INSTDEF_AUTOCLEANUP', '$IN_NEW_INSTDEF_MAILNOTIFY','$IN_NEW_INSTDEF_HIPCHATNOTIFY', '$IN_NEW_INSTDEF_MAILTO', '$IN_NEW_INSTDEF_RECOVER_CRASH_ENABLE', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_ENABLE', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_POLL_MAX', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_START_WAIT', '$IN_NEW_INSTDEF_RECOVER_SLEEP', '$IN_NEW_INSTDEF_STARTBIN', '$IN_NEW_INSTDEF_STARTBINARGS');"
+		$SQLCMD "insert into 'srcinfo' (GAMETYPE, GAMENAME, UPDATER, HLDSID, SERVER_APPID, CLIENT_APPID, GAMEARG, BINDIRSUBD, STEAMINF, INSTDEF_IPADDR, INSTDEF_CLIENTPORT, INSTDEF_HOSTPORT, INSTDEF_TVPORT, INSTDEF_STEAMPORT, INSTDEF_ALLOWUPDATE, INSTDEF_ALLOWSTART, INSTDEF_BOOTSTART, INSTDEF_AUTOCLEANUP, INSTDEF_MAILNOTIFY, INSTDEF_HIPCHATNOTIFY, INSTDEF_MAILTO, INSTDEF_RECOVER_CRASH_ENABLE, INSTDEF_RECOVER_WATCHDOG_ENABLE, INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL, INSTDEF_RECOVER_WATCHDOG_POLL_MAX, INSTDEF_RECOVER_WATCHDOG_START_WAIT, INSTDEF_RECOVER_SLEEP, INSTDEF_STARTBIN, INSTDEF_STARTBINARGS) values ('$IN_NEW_GAMETYPE', '$IN_NEW_GAMENAME', '$IN_NEW_UPDATER', '$IN_NEW_HLDSID', '$IN_NEW_SERVER_APPID', '$IN_NEW_CLIENT_APPID', '$IN_NEW_GAMEARG', '$IN_NEW_BINDIRSUBD', '$IN_NEW_STEAMINF', '$IN_NEW_INSTDEF_IPADDR', '$IN_NEW_INSTDEF_CLIENTPORT', '$IN_NEW_INSTDEF_HOSTPORT', '$IN_NEW_INSTDEF_TVPORT', '$IN_NEW_INSTDEF_STEAMPORT', '$IN_NEW_INSTDEF_ALLOWUPDATE', '$IN_NEW_INSTDEF_ALLOWSTART', '$IN_NEW_INSTDEF_BOOTSTART', '$IN_NEW_INSTDEF_AUTOCLEANUP', '$IN_NEW_INSTDEF_MAILNOTIFY', '$IN_NEW_INSTDEF_HIPCHATNOTIFY', '$IN_NEW_INSTDEF_MAILTO', '$IN_NEW_INSTDEF_RECOVER_CRASH_ENABLE', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_ENABLE', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_POLL_MAX', '$IN_NEW_INSTDEF_RECOVER_WATCHDOG_START_WAIT', '$IN_NEW_INSTDEF_RECOVER_SLEEP', '$IN_NEW_INSTDEF_STARTBIN', '$IN_NEW_INSTDEF_STARTBINARGS');"
 		X_INSTALLDBGAMETYPE=$?
 		if [[ ! "$X_INSTALLDBGAMETYPE" == 0 ]] ; then
 			echoerr ""
@@ -2751,6 +2939,8 @@ f_changegametype() {
 
 f_install() {
 	# Install a new srcds installation.
+	#
+	local GAMETYPE_LIST X_NEWINSTALL_NEWTYPE
 	#
 	# Ignore the IN_INSTALLID, if it was provided as an argument. FIXME: This should not be possible since 'install' became a IN_PARAMS1.
 	if [[ -n "$IN_INSTALLID" ]] ; then
@@ -2817,6 +3007,9 @@ f_install() {
 
 f_tmuxattach() {
 	# Attach to the tmux session for a given installation.
+	#
+	local X_TMUXATTACH
+	#
 	# FIXME: Need to call f_getpid here and give feedback based on status.
 	# FIXME: current stdout is bad.
 	#
@@ -2866,14 +3059,18 @@ f_listrunning() {
 		else
 			continue
 		fi
-	done
+	done ; unset EACH PIDFILE
 }
 
 f_loaddbsrcinfo() {
 	# Load the database config for a particular game type.
 	#
+	unset LOADDBSRCINFO_FAIL
+	unset BINDIRSUBD CLIENT_APPID DB_BINDIRSUBD DB_CLIENT_APPID DB_GAMEARG DB_GAMENAME DB_GAMETYPE DB_HLDSID DB_INSTDEF_ALLOWSTART DB_INSTDEF_ALLOWUPDATE DB_INSTDEF_AUTOCLEANUP DB_INSTDEF_BOOTSTART DB_INSTDEF_CLIENTPORT DB_INSTDEF_HOSTPORT DB_INSTDEF_IPADDR DB_INSTDEF_MAILNOTIFY DB_INSTDEF_MAILTO DB_INSTDEF_RECOVER_CRASH_ENABLE DB_INSTDEF_RECOVER_SLEEP DB_INSTDEF_RECOVER_WATCHDOG_ENABLE DB_INSTDEF_RECOVER_WATCHDOG_POLL_MAX DB_INSTDEF_RECOVER_WATCHDOG_START_WAIT DB_INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL DB_INSTDEF_STARTBIN DB_INSTDEF_STARTBINARGS DB_INSTDEF_STEAMPORT DB_INSTDEF_TVPORT DB_SERVER_APPID DB_STEAMINF DB_UPDATER GAMEARG GAMENAME GAMETYPE HLDSID INSTDEF_ALLOWSTART INSTDEF_ALLOWUPDATE INSTDEF_AUTOCLEANUP INSTDEF_BOOTSTART INSTDEF_CLIENTPORT INSTDEF_HOSTPORT INSTDEF_IPADDR INSTDEF_MAILNOTIFY INSTDEF_MAILTO INSTDEF_RECOVER_CRASH_ENABLE INSTDEF_RECOVER_SLEEP INSTDEF_RECOVER_WATCHDOG_ENABLE INSTDEF_RECOVER_WATCHDOG_POLL_MAX INSTDEF_RECOVER_WATCHDOG_START_WAIT INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL INSTDEF_STARTBIN INSTDEF_STARTBINARGS INSTDEF_STEAMPORT INSTDEF_TVPORT SERVER_APPID STEAMINF UPDATER USEMASTER
+	local X_DBLOADCFG_SRCINFO
+	#
 	# echoerr "DEBUG: Loaded src DB for $IN_GAMETYPE"
-	LOADDBSRCINFO_FAIL=0
+	#
 	# We must have a target srcinfo row to work with.
 	if [[ -z "$IN_GAMETYPE" ]] ; then
 		LOADDBSRCINFO_FAIL=1
@@ -2970,8 +3167,11 @@ f_loaddbsrcinfo() {
 f_loaddbinst() {
 	# Load the database config for a particular installation.
 	#
+	unset LOADDBINSTINFO_FAIL
+	unset ALLOWSTART ALLOWUPDATE AUTOCLEANUP BINDIR BINDIRSUBD BOOTSTART CLIENT_APPID CLIENTPORT DB_ALLOWSTART DB_ALLOWUPDATE DB_AUTOCLEANUP DB_BINDIRSUBD DB_BOOTSTART DB_CLIENT_APPID DB_CLIENTPORT DB_GAMEARG DB_GAMENAME DB_GAMETYPE DB_HLDSID DB_HOSTPORT DB_INSTALLID DB_INSTDEF_ALLOWSTART DB_INSTDEF_ALLOWUPDATE DB_INSTDEF_AUTOCLEANUP DB_INSTDEF_BOOTSTART DB_INSTDEF_CLIENTPORT DB_INSTDEF_HOSTPORT DB_INSTDEF_IPADDR DB_INSTDEF_MAILNOTIFY DB_INSTDEF_MAILTO DB_INSTDEF_STARTBIN DB_INSTDEF_STARTBINARGS DB_INSTDEF_STEAMPORT DB_INSTDEF_TVPORT DB_INSTTYPE DB_INSTVER DB_INSTVER_METHOD DB_IPADDR DB_MAILNOTIFY DB_MAILTO DB_RECOVER_CRASH_ENABLE DB_RECOVER_SLEEP DB_RECOVER_WATCHDOG_ENABLE DB_RECOVER_WATCHDOG_POLL_MAX DB_RECOVER_WATCHDOG_START_WAIT DB_RECOVER_WATCHDOG_TEST_INTERVAL DB_SERVER_APPID DB_STARTBIN DB_STARTBINARGS DB_STEAMINF DB_STEAMPORT DB_TVPORT DB_UPDATER EVALTXT_STARTBINARGS GAMEARG GAMEDIR GAMENAME GAMETYPE HLDSID HOSTPORT INSTALLDIR INSTALLID INSTDEF_ALLOWSTART INSTDEF_ALLOWUPDATE INSTDEF_AUTOCLEANUP INSTDEF_BOOTSTART INSTDEF_CLIENTPORT INSTDEF_HOSTPORT INSTDEF_IPADDR INSTDEF_MAILNOTIFY INSTDEF_MAILTO INSTDEF_STARTBIN INSTDEF_STARTBINARGS INSTDEF_STEAMPORT INSTDEF_TVPORT INSTTYPE INSTVER INSTVER_METHOD IPADDR LOCKFILE MAILNOTIFY MAILTO PIDFILE RECOVER_CRASH_ENABLE RECOVER_SLEEP RECOVER_WATCHDOG_ENABLE RECOVER_WATCHDOG_POLL_MAX RECOVER_WATCHDOG_START_WAIT RECOVER_WATCHDOG_TEST_INTERVAL REPLAYDIR SERVER_APPID STARTBIN STARTBINARGS STEAMINF STEAMINF_FILE STEAMPORT TVPORT UPDATER USEMASTER
+	local DEFAULT_MAILTO X_DBLOADCFG_INST
+	#
 	# echoerr "DEBUG: Loading inst table for $IN_INSTALLID"
-	LOADDBINSTINFO_FAIL=0
 	# Skip if the param is "all"
 	if [[ "$IN_INSTALLID" == "all" ]] ; then
 		return	
@@ -2986,7 +3186,7 @@ f_loaddbinst() {
 	fi
 	DEFAULT_MAILTO=$WRENCH_MAILTO
 	# Get the inst record for the working installation, and the srcinfo along with it via a join.
-	while IFS='|' read INSTALLID GAMETYPE INSTTYPE IPADDR CLIENTPORT HOSTPORT TVPORT STEAMPORT GAMENAME GAMEARG UPDATER HLDSID SERVER_APPID CLIENT_APPID BINDIRSUBD STEAMINF ALLOWUPDATE ALLOWSTART BOOTSTART AUTOCLEANUP MAILNOTIFY HIPCHATNOTIFY MAILTO STARTBIN STARTBINARGS RECOVER_CRASH_ENABLE RECOVER_WATCHDOG_ENABLE RECOVER_WATCHDOG_TEST_INTERVAL RECOVER_WATCHDOG_POLL_MAX RECOVER_WATCHDOG_START_WAIT RECOVER_SLEEP INSTDEF_ALLOWUPDATE INSTDEF_ALLOWSTART INSTDEF_BOOTSTART INSTDEF_AUTOCLEANUP INSTDEF_MAILNOTIFY INSTDEF_HIPCHATNOTIFY INSTDEF_MAILTO INSTDEF_STARTBIN INSTDEF_STARTBINARGS INSTDEF_IPADDR INSTDEF_CLIENTPORT INSTDEF_HOSTPORT INSTDEF_TVPORT INSTDEF_STEAMPORT ; do
+	while IFS='|' read INSTALLID GAMETYPE INSTTYPE IPADDR CLIENTPORT HOSTPORT TVPORT STEAMPORT GAMENAME GAMEARG UPDATER HLDSID SERVER_APPID CLIENT_APPID BINDIRSUBD STEAMINF ALLOWUPDATE ALLOWSTART BOOTSTART AUTOCLEANUP MAILNOTIFY HIPCHATNOTIFY MAILTO STARTBIN STARTBINARGS RECOVER_CRASH_ENABLE RECOVER_WATCHDOG_ENABLE RECOVER_WATCHDOG_TEST_INTERVAL RECOVER_WATCHDOG_POLL_MAX RECOVER_WATCHDOG_START_WAIT RECOVER_SLEEP INSTDEF_ALLOWUPDATE INSTDEF_ALLOWSTART INSTDEF_BOOTSTART INSTDEF_AUTOCLEANUP INSTDEF_MAILNOTIFY INSTDEF_HIPCHATNOTIFY INSTDEF_MAILTO INSTDEF_STARTBIN INSTDEF_STARTBINARGS INSTDEF_IPADDR INSTDEF_CLIENTPORT INSTDEF_HOSTPORT INSTDEF_TVPORT INSTDEF_STEAMPORT INSTVER INSTVER_METHOD ; do
 		DB_INSTALLID=$INSTALLID
 		DB_GAMETYPE=$GAMETYPE
 		DB_INSTTYPE=$INSTTYPE
@@ -3032,7 +3232,9 @@ f_loaddbinst() {
 		DB_INSTDEF_HOSTPORT="$INSTDEF_HOSTPORT"
 		DB_INSTDEF_TVPORT="$INSTDEF_TVPORT"
 		DB_INSTDEF_STEAMPORT="$INSTDEF_STEAMPORT"
-	done < <($SQLCMD "select inst.INSTALLID,inst.GAMETYPE,inst.INSTTYPE,inst.IPADDR,inst.CLIENTPORT,inst.HOSTPORT,inst.TVPORT,inst.STEAMPORT,srcinfo.GAMENAME,srcinfo.GAMEARG,srcinfo.UPDATER,srcinfo.HLDSID,srcinfo.SERVER_APPID,srcinfo.CLIENT_APPID,srcinfo.BINDIRSUBD,srcinfo.STEAMINF,inst.ALLOWUPDATE,inst.ALLOWSTART,inst.BOOTSTART,inst.AUTOCLEANUP,inst.MAILNOTIFY,inst.HIPCHATNOTIFY,inst.MAILTO,inst.STARTBIN,inst.STARTBINARGS,inst.RECOVER_CRASH_ENABLE,inst.RECOVER_WATCHDOG_ENABLE,inst.RECOVER_WATCHDOG_TEST_INTERVAL,inst.RECOVER_WATCHDOG_POLL_MAX,inst.RECOVER_WATCHDOG_START_WAIT,inst.RECOVER_SLEEP,srcinfo.INSTDEF_ALLOWUPDATE,srcinfo.INSTDEF_ALLOWSTART,srcinfo.INSTDEF_BOOTSTART,srcinfo.INSTDEF_AUTOCLEANUP,srcinfo.INSTDEF_MAILNOTIFY,srcinfo.INSTDEF_HIPCHATNOTIFY,srcinfo.INSTDEF_MAILTO,srcinfo.INSTDEF_STARTBIN,srcinfo.INSTDEF_STARTBINARGS,srcinfo.INSTDEF_IPADDR,srcinfo.INSTDEF_CLIENTPORT,srcinfo.INSTDEF_HOSTPORT,srcinfo.INSTDEF_TVPORT,srcinfo.INSTDEF_STEAMPORT from inst,srcinfo on inst.GAMETYPE=srcinfo.GAMETYPE where INSTALLID='$IN_INSTALLID';")
+		DB_INSTVER="$INSTVER"
+		DB_INSTVER_METHOD="$INSTVER_METHOD"
+	done < <($SQLCMD "select inst.INSTALLID,inst.GAMETYPE,inst.INSTTYPE,inst.IPADDR,inst.CLIENTPORT,inst.HOSTPORT,inst.TVPORT,inst.STEAMPORT,srcinfo.GAMENAME,srcinfo.GAMEARG,srcinfo.UPDATER,srcinfo.HLDSID,srcinfo.SERVER_APPID,srcinfo.CLIENT_APPID,srcinfo.BINDIRSUBD,srcinfo.STEAMINF,inst.ALLOWUPDATE,inst.ALLOWSTART,inst.BOOTSTART,inst.AUTOCLEANUP,inst.MAILNOTIFY,inst.HIPCHATNOTIFY,inst.MAILTO,inst.STARTBIN,inst.STARTBINARGS,inst.RECOVER_CRASH_ENABLE,inst.RECOVER_WATCHDOG_ENABLE,inst.RECOVER_WATCHDOG_TEST_INTERVAL,inst.RECOVER_WATCHDOG_POLL_MAX,inst.RECOVER_WATCHDOG_START_WAIT,inst.RECOVER_SLEEP,srcinfo.INSTDEF_ALLOWUPDATE,srcinfo.INSTDEF_ALLOWSTART,srcinfo.INSTDEF_BOOTSTART,srcinfo.INSTDEF_AUTOCLEANUP,srcinfo.INSTDEF_MAILNOTIFY,srcinfo.INSTDEF_HIPCHATNOTIFY,srcinfo.INSTDEF_MAILTO,srcinfo.INSTDEF_STARTBIN,srcinfo.INSTDEF_STARTBINARGS,srcinfo.INSTDEF_IPADDR,srcinfo.INSTDEF_CLIENTPORT,srcinfo.INSTDEF_HOSTPORT,srcinfo.INSTDEF_TVPORT,srcinfo.INSTDEF_STEAMPORT,inst.INSTVER,inst.INSTVER_METHOD from inst,srcinfo on inst.GAMETYPE=srcinfo.GAMETYPE where INSTALLID='$IN_INSTALLID';")
 	X_DBLOADCFG_INST=$?
 	# echoerr "DEBUG: DB inst info loaded, X_DBLOADCFG_INST=$X_DBLOADCFG_INST"
 	if [[ ! "$X_DBLOADCFG_INST" == 0 ]] ; then
@@ -3108,8 +3310,10 @@ f_loaddbinst() {
 		INSTDEF_HOSTPORT=$DB_INSTDEF_HOSTPORT
 		INSTDEF_TVPORT=$DB_INSTDEF_TVPORT
 		INSTDEF_STEAMPORT=$DB_INSTDEF_STEAMPORT
+		INSTVER="$DB_INSTVER"
+		INSTVER_METHOD="$DB_INSTVER_METHOD"
 	#
-	LOCKFILE=$INSTALLDIR/lockfile.lock
+	LOCKFILE=$INSTALLDIR/lockfile.lock # FIXME: What kind of lockfile is this? Beware multi-use. May need to move/fix.
 	PIDFILE=$INSTALLDIR/server.pid
 	# In many cases, $BINDIRSUBD is going to be null, so this prevents a double slash.
 	if [[ -z "$BINDIRSUBD" ]] ; then
@@ -3122,6 +3326,9 @@ f_loaddbinst() {
 	else
 		REPLAYDIR=""
 	fi
+	# GAMEDIR is the directory under which we will find the cfg, resource, addons, maps, and similar directories.
+	# This directory is always named after GAMEARG, used with the -game argument on the startup command.
+	GAMEDIR=$INSTALLDIR/$GAMEARG
 	# Normalize database parameters
 		# STARTBINARGS is saved in the SQL DB as bash code, including variables. We need to eval it to do parameter expansion.
 		# This needs to be done after all other parameters/variables are set, or it won't eval correctly.
@@ -3144,6 +3351,7 @@ f_loaddbinst() {
 
 f_showconfig() {
 	# Show the database configuration for a particular installation.
+	# FIXME: We need a real showconfig command. This isn't sufficient.
 	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
@@ -3163,6 +3371,8 @@ f_showconfig() {
 
 f_rename() {
 	# Rename an installation.
+	#
+	local X_RENAMEINSTDB X_RENAMEINSTDIR
 	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
@@ -3229,6 +3439,8 @@ f_reconfig() {
 	# Configure or reconfigure a srcds installation. Data is stored in the database.
 	# NOTE: Do not perform any input validation here, since we may need to reconfigure both masters and linked types.
 	#
+	local X_CONFIGINSTALL
+	#
 	f_loaddbinst
 	if [[ "$LOADDBINSTINFO_FAIL" == 1 ]] ; then return 1 ; fi
 	f_quitifrunning # Do not proceed if the installation is actively running.
@@ -3276,6 +3488,9 @@ f_rcon() {
 f_setup() {
 	# Do the first-time setup. Dependency checks, creating the APPDIR, loading the DB, and similar requirements.
 	#
+	local DEPENDENCIES SQLDB_DOWNLOAD_URL STEAMCMD_INSTALLER_URL
+	local X_MKDIR_APPDIR X_VALIDATE_DB X_SQLDB_DOWNLOAD X_SQLDB_LOAD X_DB_VALIDATE_POSTDOWNLOAD X_DB_POSTDOWNLOAD_UPDATE
+	#
 	echo ""
 	echo "This process will help you with the basic setup needed to get $MYNAME up and running."
 	echo ""
@@ -3296,7 +3511,7 @@ f_setup() {
 		return 0
 	fi
 	#
-	DEPENDENCIES="lns $QSTAT_CMD tmux sqlite3 xmlstarlet symlinks wget lsof sed awk xargs cat echo kill egrep mail mkdir chmod find cut tr ps wc ip sort uniq rm stat whoami basename date nice renice ionice pgrep pkill"
+	DEPENDENCIES="lns $QSTAT_CMD tmux sqlite3 xmlstarlet symlinks wget lsof sed awk xargs cat echo kill egrep mail mkdir chmod find cut tr ps wc ip sort uniq rm stat whoami basename date nice renice ionice pgrep pkill tee"
 	for EACH in $DEPENDENCIES ; do
 		DEP_TARGET=$(type -p $EACH 2> /dev/null)
 		# Handle shell builtins too
@@ -3311,7 +3526,7 @@ f_setup() {
 			DEP_STATUS="Success"
 		fi
 		echo "Checking dependency \"$EACH\": Status: $DEP_STATUS : Path: $DEP_TARGET"
-	done
+	done ; unset EACH DEP_TARGET DEP_STATUS
 	echo ""
 	if [[ "$DEP_FAIL" == 1 ]] ; then
 		echoerr "ERROR: At least one dependency check failed. You will need to fix this before you can continue."
@@ -3321,69 +3536,23 @@ f_setup() {
 		echoerr ""
 		return 1
 	else
-		echo "All dependencies found successfully."
-	fi
-	#
-	# Verify SteamCMD is installed where it should be.
-	echo ""
-	echo "--"
-	echo ""
-	echo "We will now verify that SteamCMD is installed, or install it if necessary."
-	echo ""
-	echo "VERIFICATION: Shall we continue?"
-	read -e -r -p "y/N: " -i "" REPLY
-	if [[ ! "$REPLY" == [yY] ]]; then
-		echo ""
-		echo "Quitting."
-		echo ""
-		return 0
+		echo "All dependencies verified successfully."
 	fi
 	echo ""
-	if [[ -x "$STEAMCMD_BIN" ]] ; then
-		echo "SteamCMD found successfully: $STEAMCMD_BIN."
-	else
-		STEAMCMD_URL="http://media.steampowered.com/installer/steamcmd_linux.tar.gz"
-		echo "SteamCMD not found. Do you want to install SteamCMD now?"
-		echo "  SteamCMD will be installed in $STEAMCMD_BIN"
-		echo ""
-		read -e -r -p "y/N: " -i "" REPLY
-		if [[ ! "$REPLY" == [yY] ]]; then
-			echo ""
-			echo "SteamCMD must be installed to use $MYNAME."
-			echo "Quitting."
-			echo ""
-			return 0
-		fi
-		# FIXME: This is junk. I got lazy. I'll fix it some day.
-		mkdir -p ~/bin/steamcmd || { echoerr "ERROR: Unable to create steamcmd dir!" ; return 1 ; }
-		wget --timeout=30 --tries=3 -O ~/bin/steamcmd/steamcmd_linux.tar.gz "$STEAMCMD_URL" &> /dev/null || { echoerr "ERROR: SteamCMD download failed. Try again later?" ; return 1 ; }
-		tar -xzf ~/bin/steamcmd/steamcmd_linux.tar.gz -C ~/bin/steamcmd/ || { echoerr "ERROR: Extracting the SteamCMD archive failed." ; return 1 ; }
-		#
-		# Verify that SteamCMD got installed correctly.
-		if [[ ! -x "$STEAMCMD_BIN" ]] ; then
-			echoerr ""
-			echoerr "ERROR: Post-install failure. SteamCMD install failed somehow."
-			echoerr ""
-			return 1
-		else
-			echo ""
-			echo "SteamCMD successfully installed."
-		fi
-		
-	fi
+	read -r -s -p "Press ENTER to continue." ; echo ""
 	#
 	# APPDIR check and creation.
 	echo ""
 	echo "--"
 	echo ""
 	echo "Now we will check if the configured APPDIR exists, and create it if necessary."
-	echo "This is where the installation directories will reside."
+	echo "This is where the $MYNAME database and installation directories will reside."
 	echo ""
 	# Test to see if APPDIR already exists.
 	if [[ -d "$APPDIR" ]] ; then
-		echo "WARNING: APPDIR $APPDIR already seems to exist."
+		echo "APPDIR $APPDIR already exists. This is normal if performing an upgrade or re-install."
 		echo ""
-		echo "VERIFICATION: Shall we continue anyway?"
+		echo "VERIFICATION: Shall we continue?"
 		read -e -r -p "y/N: " -i "" REPLY
 		if [[ ! "$REPLY" == [yY] ]]; then
 			echo ""
@@ -3421,56 +3590,135 @@ f_setup() {
 	echo "--"
 	echo ""
 	echo "$MYNAME requires an SQLite database to keep track of installations and game server types."
-	# Skip this step if a DB file already exists.
-	if [[ -f "$SQLDBFILE" ]] ; then
+	#
+	f_validate_db &> /dev/null ; X_VALIDATE_DB=$?
+	if [[ "$X_VALIDATE_DB" == 0 ]] ; then
 		echo ""
-		echo "A database file appears to already be present. Skipping this step."
-	else
-		echo "  Do you want download a sample DB which includes info for common srcds servers "
+		echo "Existing vaid database file found: $SQLDBFILE. DB version: $DB_VER"
+	elif [[ "$X_VALIDATE_DB" == 3 ]] ; then
+		# If there was no DB file, we need to create one.
+		echo ""
+		echo "No database file found. This is normal for a new installation."
+		echo ""
+		echo "  Do you want download a sample DB which includes configuration for common srcds servers "
 		echo "  (TF2, CSS, CSGO, L4D2, HL2DM), or do you want to start out with a new, blank, DB?"
 		echo "  HINT: You probably want to download it."
 		echo ""
-		# FIXME: Does this even work any more? Need to test this because of pastebin's desire to manage files.
 		select DB_OPT in DOWNLOAD NEW ; do
 			if [[ "$DB_OPT" == "DOWNLOAD" ]] ; then
-				# Sample DB
-				GETDBURL="https://raw.githubusercontent.com/riemers/wrench/master/wrench.db" # DB file source.
-				while true ; do 
+				# Sample DB with pre-loaded game types.
+				SQLDB_DOWNLOAD_URL="http://pastebin.com/download.php?i=eMKUsADN" # DB file source.
+				echo ""
+				echo "Downloading and installing database: "
+				wget --timeout=30 --tries=3 -O "$SQLDBFILE.tmp" "$SQLDB_DOWNLOAD_URL" &> /dev/null ; X_SQLDB_DOWNLOAD=$?
+				if ! [[ "$X_SQLDB_DOWNLOAD" == 0 ]] ; then
+					echoerr ""
+					echoerr "ERROR: Unable to download sample DB file."
+					echoerr "  SQL DB Download URL: $SQLDB_DOWNLOAD_URL"
+					echoerr ""
+					return 1
+				fi
+				# The downloaded DB file is actually a .dump and is loaded via import.
+				$SQLITE "$SQLDBFILE" < "$SQLDBFILE.tmp" ; X_SQLDB_LOAD=$?
+				if ! [[ "$X_SQLDB_LOAD" == 0 ]] ; then
+					echoerr ""
+					echoerr "ERROR: SQLITE exited $X_SQLDB_LOAD. Loading failed."
+					echoerr ""
+					return 1
+				else
+					rm -f "$SQLDBFILE.tmp" # Remove the temp file.
+					chmod u=wr,g-rwx,o-wrx "$SQLDBFILE" # Set reasonable file permissions on the DB file.
+				fi
+				# Validate the downloaded DB.
+				f_validate_db ; X_DB_VALIDATE_POSTDOWNLOAD=$?
+				if [[ "$X_DB_VALIDATE_POSTDOWNLOAD" == 0 ]] ; then
 					echo ""
-					echo "Downloading and installing database: "
-					wget --timeout=30 --tries=3 -O "$SQLDBFILE.tmp" "$GETDBURL" &> /dev/null || { echoerr "ERROR: DB download failed. Try again?" ; exit 1 ; }
-					$SQLITE "$SQLDBFILE" < "$SQLDBFILE.tmp" ; rm -f "$SQLDBFILE.tmp"
-					# FIXME: We need some real DB validation.
-					if [[ "$($SQLCMD '.tables')" == "inst     srcinfo" ]] ; then
-						echo "DB file downloaded and verified successfully."
-						break
-					else
-						rm -f "$SQLDBFILE"
-						echo "ERROR: DB file download or verification failed."
-						echo "  Either the file did not download, the hash test failed, or $MYNAME failed somewhere."
-						echo ""
-						echo "Do you want to try again?"
-						read -e -r -p "y/N: " -i "" IN_DLDBCONFIRM
-						if [[ "$IN_DLDBCONFIRM" == [yY] ]]; then
-							continue
-						else
-							echo ""
-							echo "Quitting."
-							echo ""
-							return 1
-						fi
-					fi
-				done
-				break
+					echo "DB file downloaded and validated successfully."
+					break
+				elif [[ "$X_DB_VALIDATE_POSTDOWNLOAD" == 2 ]] ; then
+					# Hopefully I upload a new sample DB every time I update the DB, but just in case.
+					f_update_db ; X_DB_POSTDOWNLOAD_UPDATE=$?
+					if [[ "$X_DB_POSTDOWNLOAD_UPDATE" == 0 ]] ; then break ; else return 1 ; fi
+				else
+					echoerr ""
+					echoerr "ERROR: Post-download DB validation failed."
+					echoerr ""
+					return 1
+				fi
 			elif [[ "$DB_OPT" == "NEW" ]] ; then
+				echo ""
+				echo -n "Creating a new DB file... "
 				touch "$SQLDBFILE"
 				chmod u=wr,g-rwx,o-wrx "$SQLDBFILE"
-				echo ""
-				echo "New blank DB file created: \"$SQLDBFILE\""
+				# We will create a version 1 database with apropriate tables.
+				$SQLCMD "CREATE TABLE dbinfo(DB_VER);"
+				$SQLCMD "INSERT INTO "dbinfo" VALUES('1');"
+				$SQLCMD "CREATE TABLE srcinfo(GAMETYPE UNIQUE NOT NULL PRIMARY KEY, GAMENAME NOT NULL, UPDATER, HLDSID, SERVER_APPID, CLIENT_APPID, GAMEARG, BINDIRSUBD, STEAMINF, INSTDEF_IPADDR, INSTDEF_CLIENTPORT, INSTDEF_HOSTPORT, INSTDEF_TVPORT, INSTDEF_STEAMPORT, INSTDEF_ALLOWUPDATE default '0', INSTDEF_ALLOWSTART, INSTDEF_BOOTSTART, INSTDEF_AUTOCLEANUP, INSTDEF_MAILNOTIFY, INSTDEF_MAILTO, INSTDEF_RECOVER_CRASH_ENABLE default '0', INSTDEF_RECOVER_WATCHDOG_ENABLE default '0', INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL default '10', INSTDEF_RECOVER_WATCHDOG_POLL_MAX default '6', INSTDEF_RECOVER_WATCHDOG_START_WAIT default '60', INSTDEF_RECOVER_SLEEP default '10', INSTDEF_STARTBIN, INSTDEF_STARTBINARGS);"
+				$SQLCMD "CREATE TABLE inst(INSTALLID UNIQUE NOT NULL PRIMARY KEY, GAMETYPE NOT NULL, INSTTYPE NOT NULL, IPADDR, CLIENTPORT, HOSTPORT, TVPORT, STEAMPORT, ALLOWUPDATE default '0', ALLOWSTART default '0', BOOTSTART default '0', AUTOCLEANUP default '0', MAILNOTIFY default '0', MAILTO default '', RECOVER_CRASH_ENABLE default '0', RECOVER_WATCHDOG_ENABLE default '0', RECOVER_WATCHDOG_TEST_INTERVAL default '', RECOVER_WATCHDOG_POLL_MAX default '', RECOVER_WATCHDOG_START_WAIT default '', RECOVER_SLEEP default '', STARTBIN default 'srcds_run', STARTBINARGS default '');"
+				echo "Done"
 				break
 			fi
 		done
+	elif [[ "$X_VALIDATE_DB" == 2 ]] ; then
+		# Upgrade as necessary.
+		f_update_db || return 1
+	elif ! [[ "$X_VALIDATE_DB" == 0 ]] ; then
+		# Nonzero status is an error.
+		return 1
 	fi
+	echo ""
+	read -r -s -p "Press ENTER to continue." ; echo ""
+	#
+	# Verify SteamCMD is installed where it should be.
+	echo ""
+	echo "--"
+	echo ""
+	echo "We will now verify that SteamCMD is installed, or install it if necessary."
+	echo ""
+	echo "VERIFICATION: Shall we continue?"
+	read -e -r -p "y/N: " -i "" REPLY
+	if [[ ! "$REPLY" == [yY] ]]; then
+		echo ""
+		echo "Quitting."
+		echo ""
+		return 0
+	fi
+	echo ""
+	if [[ -x "$STEAMCMD_BIN" ]] ; then
+		echo "SteamCMD found successfully: $STEAMCMD_BIN."
+	else
+		STEAMCMD_INSTALLER_URL="http://media.steampowered.com/installer/steamcmd_linux.tar.gz"
+		echo "SteamCMD not found. Do you want to install SteamCMD now?"
+		echo "  SteamCMD will be installed in $STEAMCMD_BIN"
+		echo ""
+		read -e -r -p "y/N: " -i "" REPLY
+		if [[ ! "$REPLY" == [yY] ]]; then
+			echo ""
+			echo "SteamCMD must be installed to use $MYNAME."
+			echo "Quitting."
+			echo ""
+			return 0
+		fi
+		# FIXME: This is junk. I got lazy. I'll fix it some day.
+		mkdir -p ~/bin/steamcmd || { echoerr "ERROR: Unable to create steamcmd dir!" ; return 1 ; }
+		wget --timeout=30 --tries=3 -O ~/bin/steamcmd/steamcmd_linux.tar.gz "$STEAMCMD_INSTALLER_URL" &> /dev/null || {
+			echoerr "ERROR: SteamCMD download failed. Try again later?" ; return 1 ; }
+		tar -xzf ~/bin/steamcmd/steamcmd_linux.tar.gz -C ~/bin/steamcmd/ || { echoerr "ERROR: Extracting the SteamCMD archive failed." ; return 1 ; }
+		#
+		# Verify that SteamCMD got installed correctly.
+		if [[ ! -x "$STEAMCMD_BIN" ]] ; then
+			echoerr ""
+			echoerr "ERROR: SteamCMD install failed. Unable to execute."
+			echoerr ""
+			return 1
+		else
+			echo ""
+			echo "SteamCMD installed successfully."
+		fi
+	fi
+	echo ""
+	read -r -s -p "Press ENTER to continue." ; echo ""
+	#
 	#
 	# Bash auto-completion script notice.
 	echo ""
@@ -3504,6 +3752,10 @@ f_setup() {
 	echo '  */5 * * * *      ~/bin/wrench autoupdate 1> /dev/null'
 	echo '  0 5 * * *      ~/bin/wrench autocleanup 1> /dev/null'
 	echo ""
+	echo "  Also, you may wish to configure your servers to automatically start after a system boot:"
+	echo ""
+	echo '  @reboot       ~/bin/wrench bootstart'
+	echo ""
 	read -r -s -p "Press ENTER to continue." ; echo ""
 	#
 	# Mail configuration notice.
@@ -3523,11 +3775,11 @@ f_setup() {
 	echo ""
 	read -r -s -p "Press ENTER to continue." ; echo ""
 	#
-	echo "Setup process completed!"
+	# All done.
 	echo ""
 	echo "--"
 	echo ""
-	echo "Setup completed."
+	echo "Setup completed!"
 	echo ""
 	echo "You should now be able to install a new srcds installation. Use the \"$MYNAME install\" command to do so."
 	echo ""
@@ -3545,7 +3797,7 @@ f_runwatchdog() {
 			echoerr "$MYNAME: ERROR: environmental requirement \"$EACH\" not found."
 			ENV_ERROR=1
 		fi
-	done
+	done ; unset EACH
 	if [[ "$ENV_ERROR" == 1 ]] ; then
 		echoerr ""
 		echoerr "$MYNAME watchdog: ERROR: At least one required envrionmental variable is missing."
@@ -3598,7 +3850,7 @@ f_runwatchdog() {
 			fi
 		fi
 		sleep "$RECOVER_WATCHDOG_TEST_INTERVAL"
-	done
+	done ; unset WATCHDOG_FAILCOUNT
 }
 
 f_stopwatchdog() {
@@ -3616,7 +3868,7 @@ f_stopwatchdog() {
 f_wrenchrun() {
 	# wrench run (wrench_run) mode is a replacement for srcds_run.
 	#
-	# $1 must be "run" to run this func. This should be impossible to occur.
+	# $1 must be "run" to run this func. This should be impossible to screw up, but whatever.
 	if ! [[ "$1" == "run" ]] ; then
 		echoerr ""
 		echoerr "ERROR: The first argument for run mode must be \"run\"."
@@ -3630,6 +3882,7 @@ f_wrenchrun() {
 	#
 	# srcds_run compatability: Set a number of vars based on what srcds_linux probably expects.
 	WRENCHRUN_PARAMS=$*
+	# echoerr "DEBUG: wrench run startup envrionment (via printenv): " ; printenv ; echoerr ""
 	export LD_LIBRARY_PATH="$INSTALLDIR:$INSTALLDIR/bin:$LD_LIBRARY_PATH"
 	GAME="$GAMEARG" # Possibly overwritten later by -game
 	umask 002 # Needed for a local web server to serve replay files.
@@ -3676,7 +3929,7 @@ f_wrenchrun() {
 			echoerr "$MYNAME: ERROR: environmental requirement \"$EACH\" not found."
 			ENV_ERROR=1
 		fi
-	done
+	done ; unset EACH
 	if [[ "$ENV_ERROR" == 1 ]] ; then
 		echoerr ""
 		echoerr "$MYNAME: ERROR: At least one required envrionmental variable is missing."
@@ -3724,7 +3977,7 @@ f_wrenchrun() {
 		return 1
 	fi
 	#
-	# Warn if +map is not given on the startup command. Not required, but often an issue.
+	# Note if +map is not given on the startup command. Not required, but often an issue.
 	if [[ -z "$MAP" ]] ; then
 		echo "$MYNAME: No map specified in startup arguments."
 	fi
@@ -3795,20 +4048,21 @@ f_wrenchrun() {
 			CRASH_CAPTURE_PANE_FILE="$INSTALLDIR/crash_capture-pane_$(date +%Y%m%d%H%M%S)-$$.log" # FIXME: Not sub-second safe.
 			#
 			# A SIGKILL is special. This is how we force a seized/hung process to stop. It's still a type of crash though.
-			# A kill could come from the watchdog, but it could also come from elsewhere, so we don't know.
+			# A kill could come from the watchdog, but it could also come from elsewhere, so we can't be certain of the intent.
 			# FIXME: We can pipe back a signal from the watchdog process, I suppose.
 			if [[ "$X_SRCDS_LINUX" == 137 ]] ; then
 			 	echoerr "$MYNAME: $SRCDS_LINUX killed on SIGKILL(9), exit code: $X_SRCDS_LINUX."
 				f_mailnotify crash "Server quit on SIGKILL(9), exit code: $X_SRCDS_LINUX."
 			else
 				echoerr "$MYNAME: $SRCDS_LINUX crashed with exit code: $X_SRCDS_LINUX"
-				f_mailnotify crash "Server crashed, exit code: $X_SRCDS_LINUX."
+				f_mailnotify crash "Server crashed, exit code: $X_SRCDS_LINUX. Crash log: $CRASH_CAPTURE_PANE_FILE"
 			fi
 			#
 			# Write the recent tmux window pane history to a file, so that that it can be reviewed later.
-			# Note that the default tmux scrollback buffer is limited to 2000 lines. Define "history-limit" in your .tmux.conf to change this.
 			echoerr "$MYNAME: Saving recent tmux window pane history to file: $CRASH_CAPTURE_PANE_FILE"
-			tmux capture-pane "$TMUX_CAPTURE_OPTS" -t "$INSTALLID":0.0 \; save-buffer "$CRASH_CAPTURE_PANE_FILE"
+			# FIXME: Why does the following line not work? It works if the TMUX_CAPTURE_OPTS parameter is not quoted.
+			# tmux capture-pane "$TMUX_CAPTURE_OPTS" -t "$INSTALLID":0.0 \; save-buffer "$CRASH_CAPTURE_PANE_FILE"
+			tmux capture-pane $TMUX_CAPTURE_OPTS -t "$INSTALLID":0.0 \; save-buffer "$CRASH_CAPTURE_PANE_FILE"
 			#
 			# If crash recovery is disabled via RECOVER_CRASH_ENABLE, stop here and don't restart.
 			if [[ ! "$RECOVER_CRASH_ENABLE" == 1 ]] ; then
@@ -3819,7 +4073,7 @@ f_wrenchrun() {
 			#
 			# Stop a running installation if it crashes too often.
 			ar_CRASHES["$NEW_CRASHID"]="$NEW_CRASHID" # Append the current crash ID to the crashes array.
-			CRASH_COUNTER=0 # FIXME: Could use ${#ar_CRASHES[@]} instead.
+			declare -i CRASH_COUNTER=0 # FIXME: Could use ${#ar_CRASHES[@]} instead.
 			for EACH in "${ar_CRASHES[@]}" ; do
 				# echoerr "DEBUG: Processing crash ID $EACH"
 				# Find out if the current crash ID is within the limit window, and count it towards the limit max if so.
@@ -3831,8 +4085,8 @@ f_wrenchrun() {
 					unset ar_CRASHES[$EACH]
 					# echoerr "DEBUG: Removed old $EACH from crash array."
 				fi
-			done
-				# echoerr "DEBUG: Crash array list is: $(echo "${ar_CRASHES[@]}" | tr '\n' ' ')"
+			done ; unset EACH
+			# echoerr "DEBUG: Crash array list is: $(echo "${ar_CRASHES[@]}" | tr '\n' ' ')"
 			# If we have reached the maximum number of crashes allowed in this time window, we should not recover.
 			if [[ "$CRASH_COUNTER" -ge "$RECOVER_LIMIT_MAX" ]] ; then
 				echoerr "$MYNAME: Crash limit reached. $CRASH_COUNTER crashes within $RECOVER_LIMIT_WINDOW seconds. Will not restart."
@@ -3853,19 +4107,20 @@ f_wrenchrun() {
 			echoerr ""
 			continue
 		fi
-	done
-	#
-	unset ar_CRASHES # Delete the crash counter array.
+	done ; unset X_WATCHDOG_PID X_SRCDS_LINUX WATCHDOG_RUNNING CRASH_CAPTURE_PANE_FILE NEW_CRASHID ar_CRASHES CRASH_COUNTER ABSOLUTE_MAX_CRASH_COUNTER
 	#
 	echo ""
 	echo "$MYNAME: Quitting."
 	echo ""
+	# DEBUG_CAPTURE_PANE_FILE="$INSTALLDIR/debug_capture-pane_$(date +%Y%m%d%H%M%S)-$$.log"
+	# tmux capture-pane "$TMUX_CAPTURE_OPTS" -t "$INSTALLID":0.0 \; save-buffer "$DEBUG_CAPTURE_PANE_FILE"
 	sleep 1 # Sleep a second. This helps f_start figure out what went wrong on failed startups.
-	# sleep 60 # DEBUG
 }
 
 f_mailnotify() {
 	# Mail notifications.
+	#
+	local MAIL_TOPIC MAIL_MESSAGE
 	#
 	# Uncomment this to disable email notifications during testing.
 	# echoerr "DEBUG: Mail notifications disabled." ; MAILNOTIFY=disabled
@@ -3891,12 +4146,301 @@ f_mailnotify() {
 		ENDMESSAGE
 	fi
 
-	if [[ "$HIPCHATNOTIFY" == 1 ]] ; then
+    if [[ "$HIPCHATNOTIFY" == 1 ]] ; then
 		if [[ "$MAIL_TOPIC" == *"crash"* ]] ; then
 			curl -sS -H 'Content-type: application/json' -d "{\"color\":\"red\", \"message\":\"$INSTALLID: $MAIL_TOPIC - $MAIL_MESSAGE\", \"message_format\":\"html\",\"notify\":\"true\"}" https://api.hipchat.com/v2/room/$HIPCHAT_ROOM/notification?auth_token=$HIPCHAT_TOKEN
 		else
 			curl -sS -H 'Content-type: application/json' -d "{\"color\":\"green\", \"message\":\"$INSTALLID: $MAIL_TOPIC - $MAIL_MESSAGE\", \"message_format\":\"html\"}" https://api.hipchat.com/v2/room/$HIPCHAT_ROOM/notification?auth_token=$HIPCHAT_TOKEN
 		fi
+	fi
+}
+
+f_validate_1arg() {
+	# If this is a single-argument command trying to use more arguments when it should not, print a specific error.
+	if [[ "$IN_PARAMS_NUM" -gt 1 && " ${IN_PARAMS1[@]}" =~ "${IN_ARG} " ]] ; then
+		echoerr ""
+		echoerr "ERROR: Action argument \"$IN_ARG\" does not accept any sub-arguments."
+		echoerr ""
+		return 1
+	fi
+}
+
+f_validate_installid() {
+# Validate arguments where not more or less than one INSTALLID target is requried.
+    if [[ "$IN_PARAMS_NUM" -lt 3 && " ${IN_PARAMS3[@]} " =~ " ${IN_ARG} " &&  $IN_PARAMS != *"force" ]] ; then
+        echoerr ""
+        echoerr "Too few arguments! Minimum of 4 arguments to \"$IN_ARG\" is accepted."
+
+        echoerr "here: $IN_PARAMS"
+
+        echoerr ""
+        return 1
+    fi
+	if [[ "$IN_PARAMS_NUM" -gt 2 && " ${IN_PARAMS2[@]}" =~ "${IN_ARG} " &&  $IN_PARAMS != *"force" ]] ; then
+		echoerr ""
+		echoerr "Too many arguments! Only a single argument to \"$IN_ARG\" is accepted."
+		
+		echoerr "here: $IN_PARAMS"
+
+		echoerr ""
+		return 1
+	fi
+    if [[ "$IN_PARAMS_NUM" -lt 2 ]] ; then
+		echoerr ""
+		echoerr "ERROR: This command requires a second argument, which should be an installation ID."
+		echoerr "  What installation do you want to \"$IN_ARG\"?"
+		echoerr ""
+		return 1
+	fi
+	# If IN_INSTALLID has any trailing slashes, due to shell autocompletion, remove it
+	if (echo "$IN_INSTALLID" | egrep "+*/$" &> /dev/null) ; then
+		# echo "DEBUG: Trimming trailing slash on input."
+		IN_INSTALLID=$(echo "$IN_INSTALLID" | tr -d '/')
+	fi
+	# Test the DB to see if there is a valid installation by that name.
+	if ! [[ "$($SQLCMD "select INSTALLID from inst where INSTALLID='$IN_INSTALLID';")" == "$IN_INSTALLID" ]] ; then
+		echoerr ""
+		echoerr "ERROR: Installation ID \"$IN_INSTALLID\" not found in the database."
+		echoerr ""
+		return 1
+	fi
+	# If we are doing something to an install, there should be a directory there.
+	if [[ ! -d "$APPDIR/$IN_INSTALLID" ]] ; then
+		echoerr ""
+		echoerr "ERROR: No directory for installation \"$IN_INSTALLID\" found!"
+		echoerr ""
+		return 1
+	fi
+}
+
+f_dbup_0-to-1() {
+	# Update the wrench SQL database from version 0 to 1.
+	#
+	# This is the old database used with wrench versions v1.32 and prior, which did not have a dbinfo table, therefore we call it database version "0".
+	echo -n "Updating the DB version from 0 to 1... "
+	# Test for the GAMEARG column. If it's not there, add it with some data.
+	# SQL does conditional evaluation via CASE WHEN, but I'm dumb so let's use bash for now.
+	$SQLCMD "select GAMEARG from srcinfo;" &> /dev/null || $SQLCMD <<- ENDSQL
+		begin transaction;
+		alter table srcinfo add column GAMEARG;
+		update srcinfo set GAMEARG="csgo" where GAMETYPE="csgo";
+		update srcinfo set GAMEARG="cstrike" where GAMETYPE="css";
+		update srcinfo set GAMEARG="fof" where GAMETYPE="fof";
+		update srcinfo set GAMEARG="hl2mp" where GAMETYPE="hl2dm";
+		update srcinfo set GAMEARG="left4dead" where GAMETYPE="l4d";
+		update srcinfo set GAMEARG="left4dead2" where GAMETYPE="l4d2";
+		update srcinfo set GAMEARG="tf" where GAMETYPE="tf2";
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	# Add the wrench_run watchdog columns if needed.
+	$SQLCMD "select RECOVER_CRASH_ENABLE from inst;" &> /dev/null || $SQLCMD <<- ENDSQL
+		begin transaction;
+		alter table inst add column RECOVER_CRASH_ENABLE default '0';
+		alter table inst add column RECOVER_WATCHDOG_ENABLE default '0';
+		alter table inst add column RECOVER_WATCHDOG_TEST_INTERVAL default '';
+		alter table inst add column RECOVER_WATCHDOG_POLL_MAX default '';
+		alter table inst add column RECOVER_WATCHDOG_START_WAIT default '';
+		alter table inst add column RECOVER_SLEEP default '';
+		update inst set RECOVER_CRASH_ENABLE="1";
+		update inst set RECOVER_WATCHDOG_ENABLE="1";
+		update inst set RECOVER_WATCHDOG_TEST_INTERVAL="10";
+		update inst set RECOVER_WATCHDOG_POLL_MAX="6";
+		update inst set RECOVER_WATCHDOG_START_WAIT="60";
+		update inst set RECOVER_SLEEP="10";
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	# If the old REPLAYPORT column exists on inst, remove it.
+	# This is complicated because sqlite does not support ALTER TABLE commands to remove columns.
+	$SQLCMD "select REPLAYPORT from inst;" &> /dev/null && $SQLCMD <<- ENDSQL
+		begin transaction;
+		create temporary table temp_inst(INSTALLID UNIQUE NOT NULL PRIMARY KEY, GAMETYPE NOT NULL, INSTTYPE NOT NULL, IPADDR, CLIENTPORT, HOSTPORT, TVPORT, STEAMPORT, ALLOWUPDATE default '0', ALLOWSTART default '0', BOOTSTART default '0', AUTOCLEANUP default '0', MAILNOTIFY default '0', MAILTO default '', RECOVER_CRASH_ENABLE default '0', RECOVER_WATCHDOG_ENABLE default '0', RECOVER_WATCHDOG_TEST_INTERVAL default '', RECOVER_WATCHDOG_POLL_MAX default '', RECOVER_WATCHDOG_START_WAIT default '', RECOVER_SLEEP default '', STARTBIN default 'srcds_run', STARTBINARGS default '');
+		insert into temp_inst select INSTALLID,GAMETYPE,INSTTYPE,IPADDR,CLIENTPORT,HOSTPORT,TVPORT,STEAMPORT,ALLOWUPDATE,ALLOWSTART,BOOTSTART,AUTOCLEANUP,MAILNOTIFY,MAILTO,RECOVER_CRASH_ENABLE,RECOVER_WATCHDOG_ENABLE,RECOVER_WATCHDOG_TEST_INTERVAL,RECOVER_WATCHDOG_POLL_MAX,RECOVER_WATCHDOG_START_WAIT,RECOVER_SLEEP,STARTBIN,STARTBINARGS from inst;
+		drop table inst;
+		create table inst(INSTALLID UNIQUE NOT NULL PRIMARY KEY, GAMETYPE NOT NULL, INSTTYPE NOT NULL, IPADDR, CLIENTPORT, HOSTPORT, TVPORT, STEAMPORT, ALLOWUPDATE default '0', ALLOWSTART default '0', BOOTSTART default '0', AUTOCLEANUP default '0', MAILNOTIFY default '0', MAILTO default '', RECOVER_CRASH_ENABLE default '0', RECOVER_WATCHDOG_ENABLE default '0', RECOVER_WATCHDOG_TEST_INTERVAL default '', RECOVER_WATCHDOG_POLL_MAX default '', RECOVER_WATCHDOG_START_WAIT default '', RECOVER_SLEEP default '', STARTBIN default 'srcds_run', STARTBINARGS default '');
+		insert into inst select INSTALLID,GAMETYPE,INSTTYPE,IPADDR,CLIENTPORT,HOSTPORT,TVPORT,STEAMPORT,ALLOWUPDATE,ALLOWSTART,BOOTSTART,AUTOCLEANUP,MAILNOTIFY,MAILTO,RECOVER_CRASH_ENABLE,RECOVER_WATCHDOG_ENABLE,RECOVER_WATCHDOG_TEST_INTERVAL,RECOVER_WATCHDOG_POLL_MAX,RECOVER_WATCHDOG_START_WAIT,RECOVER_SLEEP,STARTBIN,STARTBINARGS from temp_inst;
+		drop table temp_inst;
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	# If the old INSTDEF_REPLAYPORT column exists on srcinfo, remove it.
+	# This is complicated because sqlite does not support ALTER TABLE commands to remove columns.
+	$SQLCMD "select INSTDEF_REPLAYPORT from srcinfo;" &> /dev/null && $SQLCMD <<- ENDSQL
+		begin transaction;
+		create temporary table temp_srcinfo(GAMETYPE UNIQUE NOT NULL PRIMARY KEY, GAMENAME NOT NULL, UPDATER, HLDSID, SERVER_APPID, CLIENT_APPID, GAMEARG, BINDIRSUBD, STEAMINF, INSTDEF_IPADDR, INSTDEF_CLIENTPORT, INSTDEF_HOSTPORT, INSTDEF_TVPORT, INSTDEF_STEAMPORT, INSTDEF_ALLOWUPDATE default '0', INSTDEF_ALLOWSTART, INSTDEF_BOOTSTART, INSTDEF_AUTOCLEANUP, INSTDEF_MAILNOTIFY, INSTDEF_MAILTO, INSTDEF_RECOVER_CRASH_ENABLE default '0', INSTDEF_RECOVER_WATCHDOG_ENABLE default '0', INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL default '10', INSTDEF_RECOVER_WATCHDOG_POLL_MAX default '6', INSTDEF_RECOVER_WATCHDOG_START_WAIT default '60', INSTDEF_RECOVER_SLEEP default '10', INSTDEF_STARTBIN, INSTDEF_STARTBINARGS);
+		insert into temp_srcinfo select GAMETYPE,GAMENAME,UPDATER,HLDSID,SERVER_APPID,CLIENT_APPID,GAMEARG,BINDIRSUBD,STEAMINF,INSTDEF_IPADDR,INSTDEF_CLIENTPORT,INSTDEF_HOSTPORT,INSTDEF_TVPORT,INSTDEF_STEAMPORT,INSTDEF_ALLOWUPDATE,INSTDEF_ALLOWSTART,INSTDEF_BOOTSTART,INSTDEF_AUTOCLEANUP,INSTDEF_MAILNOTIFY,INSTDEF_MAILTO,INSTDEF_RECOVER_CRASH_ENABLE,INSTDEF_RECOVER_WATCHDOG_ENABLE,INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL,INSTDEF_RECOVER_WATCHDOG_POLL_MAX,INSTDEF_RECOVER_WATCHDOG_START_WAIT,INSTDEF_RECOVER_SLEEP,INSTDEF_STARTBIN,INSTDEF_STARTBINARGS from srcinfo;
+		drop table srcinfo;
+		create table srcinfo(GAMETYPE UNIQUE NOT NULL PRIMARY KEY, GAMENAME NOT NULL, UPDATER, HLDSID, SERVER_APPID, CLIENT_APPID, GAMEARG, BINDIRSUBD, STEAMINF, INSTDEF_IPADDR, INSTDEF_CLIENTPORT, INSTDEF_HOSTPORT, INSTDEF_TVPORT, INSTDEF_STEAMPORT, INSTDEF_ALLOWUPDATE default '0', INSTDEF_ALLOWSTART, INSTDEF_BOOTSTART, INSTDEF_AUTOCLEANUP, INSTDEF_MAILNOTIFY, INSTDEF_MAILTO, INSTDEF_RECOVER_CRASH_ENABLE default '0', INSTDEF_RECOVER_WATCHDOG_ENABLE default '0', INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL default '10', INSTDEF_RECOVER_WATCHDOG_POLL_MAX default '6', INSTDEF_RECOVER_WATCHDOG_START_WAIT default '60', INSTDEF_RECOVER_SLEEP default '10', INSTDEF_STARTBIN, INSTDEF_STARTBINARGS);
+		insert into srcinfo select GAMETYPE,GAMENAME,UPDATER,HLDSID,SERVER_APPID,CLIENT_APPID,GAMEARG,BINDIRSUBD,STEAMINF,INSTDEF_IPADDR,INSTDEF_CLIENTPORT,INSTDEF_HOSTPORT,INSTDEF_TVPORT,INSTDEF_STEAMPORT,INSTDEF_ALLOWUPDATE,INSTDEF_ALLOWSTART,INSTDEF_BOOTSTART,INSTDEF_AUTOCLEANUP,INSTDEF_MAILNOTIFY,INSTDEF_MAILTO,INSTDEF_RECOVER_CRASH_ENABLE,INSTDEF_RECOVER_WATCHDOG_ENABLE,INSTDEF_RECOVER_WATCHDOG_TEST_INTERVAL,INSTDEF_RECOVER_WATCHDOG_POLL_MAX,INSTDEF_RECOVER_WATCHDOG_START_WAIT,INSTDEF_RECOVER_SLEEP,INSTDEF_STARTBIN,INSTDEF_STARTBINARGS from temp_srcinfo;
+		drop table temp_srcinfo;
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	# Update the DB version.
+	$SQLCMD <<- ENDSQL
+		begin transaction;
+		create table dbinfo (DB_VER);
+		insert into "dbinfo" values ('1');
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	#
+	echo "Done"
+}
+
+f_dbup_1-to-2() {
+	# Update the wrench SQL database from version 1 to 2.
+	#
+	local LIST_MASTERS
+	#
+	echo -n "Updating the DB version from 1 to 2... "
+	# Add the INSTVER and INSTVER_METHOD column to inst to start tracking local versions in the wrench DB.
+	$SQLCMD <<- ENDSQL
+		begin transaction;
+		alter table inst add column INSTVER;
+		alter table inst add column INSTVER_METHOD;
+		update inst set INSTVER='0' where INSTTYPE='master';
+		update inst set INSTVER_METHOD='db' where INSTTYPE='master';
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	# For existing master installations, we import the steaminf local version into the db.
+	# This will prevent a sudden need to update all installations just to set the INSTVER the the current version.
+	LIST_MASTERS=$($SQLCMD "select INSTALLID from inst where INSTTYPE='master';") || return 1
+	for EACH_MASTER in $LIST_MASTERS ; do
+		IN_INSTALLID=$EACH_MASTER
+		f_loaddbinst || return 1
+		INSTVER_METHOD=steaminf ; f_getlocalver
+		# echoerr "DEBUG: Setting $INSTALLID INSTVER to $LOCAL_VER from steaminf."
+		$SQLCMD "update inst set INSTVER='$LOCAL_VER' where INSTALLID='$EACH_MASTER';" || return 1
+	done ; unset EACH_MASTER
+	# Update the DB version.
+	$SQLCMD <<- ENDSQL
+		begin transaction;
+		update dbinfo set DB_VER='2';
+		commit;
+	ENDSQL
+	if ! [[ $? == 0 ]] ; then return 1 ; fi
+	echo "Done"
+}
+
+f_dbup_fail() {
+	# If we fail a database update, we need to help the user revert to a working situation.
+	echoerr ""
+	echoerr "The database upgrade process has failed."
+	echoerr ""
+	echoerr "You should revert $MYNAME to the previous version, and restore your old database backup."
+	echoerr "  The previous database prior to the failed update is here: $BACKUP_SQLDBFILE"
+	echoerr ""
+	return 1
+}
+
+f_update_db() {
+	# Update the SQL database.
+	#
+	local BACKUP_SQLDBFILE X_UPDATE_DB_VALIDATE UPDATE_DB_LOOP_COUNTER
+	#
+	# First, make a backup.
+	BACKUP_SQLDBFILE=$SQLDBFILE.bak-${RUNID}
+	echo "Backing up the old DB to file: $BACKUP_SQLDBFILE"
+	cp -ap "$SQLDBFILE" "$BACKUP_SQLDBFILE" || {
+		echoerr ""
+		echoerr "ERROR: Unable to make DB backup prior to update. Quitting."
+		echoerr "  SQLDBFILE=$SQLDBFILE, BACKUP_SQLDBFILE=$BACKUP_SQLDBFILE"
+		echoerr ""
+		return 1
+	}
+	#
+	declare -i UPDATE_DB_LOOP_COUNTER="0"
+	while true ; do
+		# While we want to loop though updates, it's possible to cause a runaway process. We will limit the maximum number of loops to prevent such problems.
+		UPDATE_DB_LOOP_COUNTER=$(( $UPDATE_DB_LOOP_COUNTER + 1 ))
+		if [[ "$UPDATE_DB_LOOP_COUNTER" -ge 20 ]] ; then
+			echoerr ""
+			echoerr "ERROR: Maximum number of DB update attempts reached."
+			echoerr ""
+			return 1
+		fi
+		# Only loop while the DB validator says that we still need to update.
+		f_validate_db &> /dev/null ; X_UPDATE_DB_VALIDATE=$?
+		if [[ "$X_UPDATE_DB_VALIDATE" == 0 ]] ; then
+			# echoerr "DEBUG: Database fully updated."
+			break
+		elif ! [[ "$X_UPDATE_DB_VALIDATE" == 2 ]] ; then
+			return 1
+		fi
+		#
+		case "$DB_VER" in
+			# This is where we make decisions about how to update each DB version to the next.
+			# Run the dbup functions in subshells to isolate the main envrionment.
+			'0')
+				( f_dbup_0-to-1 ) || { f_dbup_fail ; return 1 ; }
+			;;
+			'1')
+				( f_dbup_1-to-2 ) || { f_dbup_fail ; return 1 ; }
+			;;
+			*) # Anything else is unknown
+				echoerr ""
+				echoerr "ERROR: Unknown database version. Unable to upgrade!"
+				echoerr ""
+				return 1
+		esac
+	done ; unset UPDATE_DB_LOOP_COUNTER
+}
+
+f_validate_db() {
+	# Validate the database. Return 0=valid, 1=error, 2=needs-update 3=no-file
+	# Require the DB file to be present.
+	#
+	unset DB_VER DB_STATUS
+	local X_DB_VER
+	#
+	# Obviously, if the file isn't there, that's a fail, except for setup. 
+	if ! [[ -f "$SQLDBFILE" ]] ; then
+		echoerr ""
+		echoerr "ERROR: SQLDBFILE, \"$SQLDBFILE\" not found!"
+		echoerr "  If you want to perform setup for the first time, run \"wrench setup\"."
+		echoerr ""
+		DB_STATUS=nofile
+		return 3
+	fi
+	# Try to get the DB version.
+	DB_VER=$($SQLCMD "select DB_VER from dbinfo;" 2> /dev/null) ; X_DB_VER=$?
+	if ! [[ "$X_DB_VER" == 0 ]] ; then
+		# Either this DB is invalid, SQLITE failed, or it's an old version 0 DB. We need to find out which it is.
+		if [[ "$($SQLCMD '.tables' 2> /dev/null)" == "inst     srcinfo" ]] ; then
+			# This is an old version 0 DB.
+			DB_VER=0
+		else
+			# Whatever this is, we can't use it.
+			unset DB_VER
+			echoerr ""
+			echoerr "ERROR: SQLITE exited $X_DB_VER while trying to get DB_VER. Database invalid?"
+			echoerr ""
+			DB_STATUS=error
+			return 1
+		fi
+	fi
+	# Now that we have a DB_VER, figure out what it means.
+	if [[ "$DB_VER" == $"REQ_SQLDB_VER" ]] ; then # DB version is valid and compatible.
+		# echoerr "DEBUG: DB version valid. REQ_SQLDB_VER=$REQ_SQLDB_VER, DB_VER=$DB_VER"
+		DB_STATUS=valid
+		return 0
+	elif [[ "$DB_VER" -lt "$REQ_SQLDB_VER" ]] ; then # We need to update the DB.
+		echoerr "" 
+		echoerr "The $MYNAME database needs to be updated."
+		echoerr ""
+		DB_STATUS=update
+		return 2
+	elif [[ "$DB_VER" -gt "$REQ_SQLDB_VER" ]] ; then # This DB is from the future! Someone call the time police.
+		echoerr ""
+		echoerr "ERROR: The $MYNAME DB version is greater than the supported version."
+		echoerr "  This version of $MYNAME can't support a newer DB. Update $MYNAME to the current version?"
+		echoerr "  REQ_SQLDB_VER=$REQ_SQLDB_VER, DB_VER=$DB_VER"
+		echoerr ""
+		DB_STATUS=error
+		return 1
 	fi
 }
 
@@ -3945,7 +4489,7 @@ f_wrenchrun_cleanup() {
 
 f_help() {
 	# Print some basic help info.
-	BEENHERE_HELP=1
+	SEEN_HELP=1
 	echoerr ""
 	echoerr "$MYNAME is a Source Dedicated Server (srcds) management tool for Valve's srcds-based game servers."
 	echoerr ""
@@ -3961,18 +4505,18 @@ f_commandusage() {
 	echoerr "Single-argument commands:"
 	for EACH in ${IN_PARAMS1[@]} ; do
 		echoerr "  $MYNAME $EACH"
-	done
+	done ; unset EACH
 	echoerr ""
 	echoerr "Server-specific commands:"
 	for EACH in ${IN_PARAMS2[@]} ; do
 		echoerr "  $MYNAME $EACH MyTarget"
-	done
+	done ; unset EACH
         echoerr ""
         echoerr "Server-specific multi commands:"
         for EACH in ${IN_PARAMS3[@]} ; do
                 echoerr "  $MYNAME $EACH MyTarget MyCommand"
         done
-	if [[ ! "$BEENHERE_HELP" == 1 ]] ; then
+	if [[ ! "$SEEN_HELP" == 1 ]] ; then
 		echoerr ""
 		echoerr "Try \"$MYNAME help\" for more information."
 	fi
@@ -4003,7 +4547,7 @@ IN_PARAMS_NUM="$#"
 #  IN_PARAMS2 = dual argument commands, $2 is required.
 #  IN_PARAMS3 = multiple argument commands, $2, $3+ is required.
 declare -a IN_PARAMS1=(install uninstall list listplayers autocleanup autoupdate bootstart stopall setup)
-declare -a IN_PARAMS2=(start stop stopnow restart restartnow console status showconfig reconfig rename relink delink lockdown-master unlock-master update updatenow update-validate update-validatenow gametype)
+declare -a IN_PARAMS2=(start stop stopnow restart restartnow console status showconfig reconfig rename relink delink lockdown-master unlock-master cleanup update updatenow update-validate update-validatenow gametype)
 declare -a IN_PARAMS3=(rcon)
 
 # If "quakestat" is insatlled instead of qstat, use quakestat instead. quakestat comes from the debian qstat package.
@@ -4017,7 +4561,7 @@ fi
 
 
 # For anything other than initial setup or help, do some sanity checking.
-if [[ ! "$IN_ARG" =~ "setup"|"help" ]] ; then
+if [[ -n "$IN_ARG" ]] && [[ ! "$IN_ARG" =~ ^setup$|^help$ ]] ; then
 	# Require APPDIR to be present.
 	if [[ ! -d "$APPDIR" ]] ; then
 		echoerr ""
@@ -4027,16 +4571,17 @@ if [[ ! "$IN_ARG" =~ "setup"|"help" ]] ; then
 		echoerr ""
 		exit 1
 	fi
-	# Require the DB file to be present.
-	if [[ ! -f "$SQLDBFILE" ]] ; then
-		echoerr ""
-		echoerr "ERROR: SQLDBFILE, \"$SQLDBFILE\" not found!"
-		echoerr "  If you want to perform setup for the first time, use the \"setup\" argument."
-		echoerr "  Be sure you have read the ${MYNAME}_README.txt file first!"
-		echoerr ""
+	# Validate the DB.
+	f_validate_db ; X_VALIDATE_DB=$?
+	if [[ "$X_VALIDATE_DB" == 2 ]] ; then
+		# Upgrade as necessary.
+		f_update_db || exit 1
+	elif ! [[ "$X_VALIDATE_DB" == 0 ]] ; then
+		# Nonzero status is an error.
 		exit 1
 	fi
 	# If the steam and steamcmd.sh binaries are not found, we probably can't do installs or updates.
+	# FIXME: Might want to turn this into a validation func; f_validate_steamcmd?
 	if [[ ! -x "$STEAMCMD_BIN" ]] ; then
 		echoerr ""
 		echoerr "WARNING: Unable to find the SteamCMD installation."
@@ -4065,195 +4610,145 @@ fi
 # tmux related prereq work
 if (type tmux &> /dev/null) ; then
 	# Get the tmux version.
-	TMUX_VER=$(tmux -V | egrep -o "[0-9]+.*[0-9]+" 2> /dev/null)
+	TMUX_VER=$(tmux -V | egrep -o "[0-9].*[0-9]" 2> /dev/null)
+	# NOTE: The default tmux scrollback buffer is limited to 2000 lines. Define "history-limit" in your ~/.tmux.conf to change this.
 	# tmux capture-pane supports the -J argument from version 1.8 and on. This is very helpful. Use it if possible.
 	TMUX_VER_GT18_REGEX="^1\.[8-9]$|^1\.[1-9][0-9]$|^[2-9]+" # We want to match versions > 1.8
 	if [[ "$TMUX_VER" =~ $TMUX_VER_GT18_REGEX ]] ; then
-		TMUX_CAPTURE_OPTS="-S -32768 -J"
+		TMUX_CAPTURE_OPTS="-S - -J"
 	else
-		TMUX_CAPTURE_OPTS="-S -32768"
+		TMUX_CAPTURE_OPTS="-S -"
 	fi
 	# Require tmux version 1.6 or later. This is because of the epoll/libevent bug which caused redirection hangs.
 	TMUX_VER_LT16_REGEX="^0\.[0-9]+|^1\.[0-5]$" # We want to match versions < 1.6
 	if [[ "$TMUX_VER" =~ $TMUX_VER_LT16_REGEX ]] ; then
 		echoerr ""
-		echoerr "$MYNAME requires tmux version 1.6 or later."
+		echoerr "ERROR: $MYNAME requires tmux version 1.6 or later."
 		echoerr ""
 		exit 1
 	fi
 fi
 
-f_validate_1arg() {
-	# If this is a single-argument command trying to use more arguments when it should not, print a specific error.
-	if [[ "$IN_PARAMS_NUM" -gt 1 && " ${IN_PARAMS1[@]}" =~ "${IN_ARG} " ]] ; then
-		echoerr ""
-		echoerr "ERROR: Action argument \"$IN_ARG\" does not accept any sub-arguments."
-		echoerr ""
-		exit 1
-	fi
-}
-
-f_validate_installid() {
-	# Validate arguments where not more or less than one INSTALLID target is requried.
-        if [[ "$IN_PARAMS_NUM" -lt 3 && " ${IN_PARAMS3[@]} " =~ " ${IN_ARG} " &&  $IN_PARAMS != *"force" ]] ; then
-                echoerr ""
-                echoerr "Too few arguments! Minimum of 4 arguments to \"$IN_ARG\" is accepted."
-
-                echoerr "here: $IN_PARAMS"
-
-                echoerr ""
-                exit 1
-        fi
-	if [[ "$IN_PARAMS_NUM" -gt 2 && " ${IN_PARAMS2[@]}" =~ "${IN_ARG} " &&  $IN_PARAMS != *"force" ]] ; then
-		echoerr ""
-		echoerr "Too many arguments! Only a single argument to \"$IN_ARG\" is accepted."
-		
-		echoerr "here: $IN_PARAMS"
-
-		echoerr ""
-		exit 1
-	fi
-	if [[ "$IN_PARAMS_NUM" -lt 2 ]] ; then
-		echoerr ""
-		echoerr "ERROR: This command requires a second argument, which should be an installation ID."
-		echoerr "  What installation do you want to \"$IN_ARG\"?"
-		echoerr ""
-		exit 1
-	fi
-	# If IN_INSTALLID has any trailing slashes, due to shell autocompletion, remove it
-	if (echo "$IN_INSTALLID" | egrep "+*/$" &> /dev/null) ; then
-		# echo "DEBUG: Trimming trailing slash on input."
-		IN_INSTALLID=$(echo "$IN_INSTALLID" | tr -d '/')
-	fi
-
-	# Test the DB to see if there is a valid installation by that name.
-	if ! [[ "$($SQLCMD "select INSTALLID from inst where INSTALLID='$IN_INSTALLID';")" == "$IN_INSTALLID" ]] ; then
-		echoerr ""
-		echoerr "ERROR: Installation ID \"$IN_INSTALLID\" not found in the database."
-		echoerr ""
-		exit 1
-	fi
-	# If we are doing something to an install, there should be a directory there.
-	if [[ ! -d "$APPDIR/$IN_INSTALLID" ]] ; then
-		echoerr ""
-		echoerr "ERROR: No directory for installation \"$IN_INSTALLID\" found!"
-		echoerr ""
-		exit 1
-	fi
-}
-
 # --
 
 case "$IN_ARG" in
 	'start')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_start
 	;;
 	'bootstart'|'startall')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_bootstart
 	;;
 	'stop')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_stop
 	;;
 	'stopall')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_stopall
 	;;
 	'stopnow')
-		f_validate_installid
+		f_validate_installid || exit $?
 		STOPNOW=yes
 		f_stop
 	;;
 	'restart')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_stop
 		sleep 1
 		f_start
 	;;
 	'restartnow')
-		f_validate_installid
+		f_validate_installid || exit $?
 		STOPNOW=yes
 		f_stop
 		sleep 1
 		f_start
 	;;
 	'listplayers')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_listplayers
 	;;
 	'list')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_listinstalls
 	;;
 	'status')
-		f_allorone f_status
+		f_allorone f_status || exit $?
 	;;
 	'autoupdate')
-		f_validate_1arg
-		f_autoupdate
+		f_validate_1arg || exit $?
+		# This fixes our exec breaking trap problem, but now the pipeline breaks trap too, because the env isn't set.
+		# We can fix our trap function by setting AUTOUPDATING=1 here before we even exec the func.
+		# This causes new problems, such as the removal of logs on non-updates. Need to investigate further.
+		AUTOUPDATING=1 ; f_autoupdate 2>&1 | tee $AUTOUPDATE_LOGFILE 
+	;;
+	'cleanup'|'clean')
+		f_validate_installid || exit $?
+		f_cleaninstall
 	;;
 	'update')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_update
 	;;
 	'updatenow')
-		f_validate_installid
+		f_validate_installid || exit $?
 		STOPNOW=yes
 		f_update
 	;;
 	'update-validate'|'update-verify-all')
-		f_validate_installid
+		f_validate_installid || exit $?
 		VERIFYUPDATE=1
 		f_update
 	;;
 	'update-validatenow'|'update-verify-all-now'|'update-validate-now')
-		f_validate_installid
+		f_validate_installid || exit $?
 		VERIFYUPDATE=1
 		STOPNOW=yes
 		f_update
 	;;
 	'relink')
-		f_allorone f_relink
+		f_allorone f_relink || exit $?
 	;;
 	'delink')
-		f_allorone f_delink
+		f_allorone f_delink || exit $?
 	;;
 	'console')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_tmuxattach
 	;;
 	'install')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_install
 	;;
 	'uninstall')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_uninstall
 	;;
 	'showconfig')
-		f_allorone f_showconfig
+		f_allorone f_shownconfig || exit $?
 	;;
-        'rcon')
-                f_allorone f_rcon $@
-        ;;
+    'rcon')
+        f_allorone f_rcon $@ || exit $?
+    ;;
 	'reconfig')
-		f_allorone f_reconfig
+		f_allorone f_reconfig || exit $?
+		f_reconfig
 	;;
 	'rename')
-		f_allorone f_rename
+		f_allorone f_rename || exit $?
 	;;
 	'lockdown-master'|'lock-master')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_lockdownmaster
 	;;
 	'unlock-master'|'unlockdown-master')
-		f_validate_installid
+		f_validate_installid || exit $?
 		f_unlockmaster
 	;;
 	'autocleanup'|'autoclean')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_autocleanup
 	;;
 	'gametype')
@@ -4280,7 +4775,7 @@ case "$IN_ARG" in
 		esac
 	;;
 	'setup')
-		f_validate_1arg
+		f_validate_1arg || exit $?
 		f_setup
 	;;
 	'run')
@@ -4296,3 +4791,5 @@ case "$IN_ARG" in
 		f_commandusage
 		exit 1
 esac
+
+

@@ -1,13 +1,11 @@
-# wrench README, updated for v1.31.1
+# wrench README, updated for v2.01
 
 --
 
 SUMMARY
 
 wrench is a srcds (Source Dedicated Server) management tool for Valve's srcds games, which includes Team Fortress 2, the various Counter Strike releases, Half-Life 2: Deathmatch, Left 4 Dead, and more.
-
 wrench is written in bash (v4) for command-line use. It enables the user to easily install, start, stop, update, maintain, manage, and uninstall srcds installations.
-
 This README file was written to provide an overview of what wrench can do, how it works, and how to use it.
 
 --
@@ -39,7 +37,7 @@ Executing wrench with the "help" argument will display the following helpful inf
 
 wrench is a Source Dedicated Server (srcds) management tool for Valve's srcds-based game servers.
 
-For more information, including full documentation, go here: 
+For more information, including full documentation, go here:
   http://forums.srcds.com/viewpost/118741
 
 Single-argument commands:
@@ -68,6 +66,7 @@ Server-specific commands:
   wrench delink MyTarget|all
   wrench lockdown-master MyTarget
   wrench unlock-master MyTarget
+  wrench cleanup MyTarget
   wrench update MyTarget
   wrench updatenow MyTarget
   wrench update-validate MyTarget
@@ -106,7 +105,7 @@ Normally, a user should not need to interface with the database directly. The "i
 
 Typically, the configuration for a new game type is entered once during the installation of a new server. However, if the game type (srcinfo) configuration needs to be changed or removed, the "gametype" command exists to do so. The "gametype" argument accepts "add", "change", and "delete". With this option, you can add, change, and delete game type configuration.
 
-wrench has a built-in system for automatically updating installations when Steam releases an update for each game type. This autoupdate system will automatically detect when a new update has been released, notify the user via email of the update (including a log), warn in-game users of the update, stop only the affected installation types, update the master, relink all linked installations, and restart those which were running at the time the update started. Unless an update breaks something in the configuration or addons/mods, zero user intervention is required. Normally the instances needs to be down for this. But if you are positive the change is minimal (you updates a plugin in your master server or new cfg) you can use the optional extra command "force" at the end to still run it. Use with CAUTION! If you update binary files on the Master and run with force, servers have a good chance of crashing and restarting!
+wrench has a built-in system for automatically updating installations when Steam releases an update for each game type. This autoupdate system will automatically detect when a new update has been released, notify the user via email of the update (including a log), warn in-game users of the update, stop the affected installation types, update the master, relink all linked installations, and restart those which were running at the time the update started. Unless an update breaks something in the configuration or addons/mods, no server admin intervention is required when an update is released.
 
 wrench has built-in functionality to automatically clean up srcds installations. srcds isn't very good at cleaning up after itself, so wrench helps out by automatically rotating log files, compressing them, deleting them after a set period of time, cleaning up download cache directories (spray files), cleaning up old replay files, and more. This cleanup process is customized for each game type, and can be enabled or disabled on an individual linked installation basis. Master installations don't need to be cleaned up since they never actually run.
 
@@ -138,7 +137,7 @@ wrench tries to do a lot of things. Probably too many things. Chances are pretty
 
 --
 
-CONFIGURATION PARAMETERS 
+CONFIGURATION PARAMETERS
 
 wrench uses a number of common parameters (variables) and understanding them is important.
 
@@ -306,11 +305,11 @@ Additionally, the user may wish to start their installations at system boot by u
 
 @reboot        ~/bin/wrench bootstart
 
-Be sure to "stopall" of your srcds installations when rebooting or shutting down your host system.
+Be sure to "stopall" of your srcds installations before rebooting or shutting down your host system.
 
 wrench sends email notifications on events. Be sure to configure your host to send email via a local MTA, or a remote mail router/smarthost.
 
-Finally, remember to configure your firewall as appropriate.
+Remember to configure your firewall as appropriate.
 
 After all requirements have been met, install your first srcds with the "install" command, add some config files, and "start" it! Then use the "list" command to show all of your installed servers, "listplayers" to see who is playing, "status" to see the status of the running installation, and finally "stop" it.
 
@@ -332,9 +331,9 @@ Remember to set "-replay" in your installation STARTUP_ARGS during configuration
 
 MISCELLANEOUS NOTES
 
-tmux previously had a serious redirection bug which can cause wrench to break badly. Make sure you have tmux version of 1.6 or greater.
+tmux previously had a serious redirection bug which can cause wrench to break badly. As a result, tmux version of 1.6 or greater is required.
 
-The "lockdown-master" command, in addition to removing file and directory write permissions on a master install, also sets sane executable permissions. All executable permissions are removed from files, except for a few specific files, such as srcds_run and srcds_linux.
+The "lockdown-master" command, in addition to removing file and directory write permissions on a master install, also sets sane executable permissions. All executable permissions are removed from files, except where needed, such as srcds_run and srcds_linux.
 
 The "relink" command automatically removes the 40-character directory which is included in each master installation. These 40-character directories are probably a SHA1 hash, and are used by SteamCMD, but they have no relevance to linked installations, so their links are removed.
 
@@ -348,9 +347,9 @@ The difference between the GAMETYPE, GAMEARG, and HLDSID values in database srci
 
 As of version 1.10 (20140606), the application was renamed from "wrench.sh" to "wrench". You can name wrench to whatever you want, just remember to update dependencies: Your crontabs, the STARTBIN field in each installations inst database table, et-cetera.
 
-There are a number of different ways to stop a running server which are acceptable. Of course, you can use wrench itself with the "stop" or "stopnow" command, but you can also type "quit" on the console and everything will clean itself up. You can also send a TERM signal with the kill command. Never ever send a kill -9 (SIGKILL) unless you know what you are doing.
+There are a number of different ways to stop a running server which are acceptable. Of course, you can use wrench itself with the "stop" or "stopnow" command, but you can also type "quit" on the console and everything will clean itself up. You can also send the srcd_linux process a TERM signal with the kill command. Never ever send a kill -9 (SIGKILL) unless you know what you are doing.
 
-The REPLAYPORT parameter has been removed from wrench as of version 1.25 (20150406). It was the Replay Port (+replay_port) used by TF2, which was depreciated by Valve.
+The REPLAYPORT parameter has been removed from wrench as of version 1.25 (20150406). It was the Replay Port (+replay_port) used by TF2, which was depreciated by Valve. REPLAYPORT and related data was removed from databases in DB version 1.
 
 Rcon option can be used to do a "_restart" or any other command. You don't have to enclose it with quotes "". But for best practice its usefull to do incase you want specific characters in there. Please take note that if you run this command and the server is just changing maps it could perhaps just miss it. So don't use it for anything "vital"
 
@@ -370,3 +369,5 @@ You may not find tmux or xmlstarlet in the default repositories. Add the RPMForg
 Contributors: Snelvuur (http://steamcommunity.com/id/snelvuur)
 Original Author: Jmomo (http://steamcommunity.com/id/jmomo)
 Original Author Thread: http://forums.srcds.com/viewpost/118741
+
+wrench and README.txt are herein assigned to the public domain.
