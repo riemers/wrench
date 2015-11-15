@@ -143,7 +143,7 @@ CONFIGURATION PARAMETERS
 
 wrench uses a number of common parameters (variables) and understanding them is important.
 
-Most users will only need to know and work with a very few of these parameters, and they have been put near the top of the script for easy modification. Most of these parameters have sane defaults, and you probably won't need to make any modifications to them.
+Most users will only need to know and work with a very few of these parameters, and they have been put in a seperate config file. A example '.config.sample' is placed in the repo. Make sure you rename it to '.config' and place it in the same folder as wrench. Most of these parameters have sane defaults, and you probably won't need to make any modifications to them.
 
 Below are listed the most common parameters and their default values, which may need to be modified by the user.
 
