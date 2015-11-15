@@ -4552,7 +4552,7 @@ IN_PARAMS_NUM="$#"
 #  IN_PARAMS2 = dual argument commands, $2 is required.
 #  IN_PARAMS3 = multiple argument commands, $2, $3+ is required.
 declare -a IN_PARAMS1=(install uninstall list listplayers autocleanup autoupdate bootstart stopall setup)
-declare -a IN_PARAMS2=(start stop stopnow restart restartnow console status showconfig reconfig rename relink delink lockdown-master unlock-master cleanup update updatenow update-validate update-validatenow gametype)
+declare -a IN_PARAMS2=(start stop stopnow restart restartall restartnow console status showconfig reconfig rename relink delink lockdown-master unlock-master cleanup update updatenow update-validate update-validatenow gametype)
 declare -a IN_PARAMS3=(rcon)
 
 # If "quakestat" is insatlled instead of qstat, use quakestat instead. quakestat comes from the debian qstat package.

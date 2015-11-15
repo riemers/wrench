@@ -355,6 +355,8 @@ The REPLAYPORT parameter has been removed from wrench as of version 1.25 (201504
 
 Rcon option can be used to do a "_restart" or any other command. You don't have to enclose it with quotes "". But for best practice its usefull to do incase you want specific characters in there. Please take note that if you run this command and the server is just changing maps it could perhaps just miss it. So don't use it for anything "vital"
 
+Using restartall daily to keep the servers clean can be used with another message. export MESSAGEDOWN="Daily restart.. be back in a few...", and that message will be shown instead.
+
 --
 
 WRENCH ON CENTOS
