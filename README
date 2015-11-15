@@ -139,6 +139,8 @@ wrench tries to do a lot of things. Probably too many things. Chances are pretty
 
 CONFIGURATION PARAMETERS
 
+#### Be sure to place the files in directly into your ~/bin folder or say ~/script otherwise change the path if it fails to find files!
+
 wrench uses a number of common parameters (variables) and understanding them is important.
 
 Most users will only need to know and work with a very few of these parameters, and they have been put near the top of the script for easy modification. Most of these parameters have sane defaults, and you probably won't need to make any modifications to them.

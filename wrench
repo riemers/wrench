@@ -7,15 +7,16 @@
 #
 # --
 # Set PATH as is apropriate for your system. Mostly we need this for cron usage, otherwise possibly not needed.
-PATH=~/bin:/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin
+PATH=~/bin:~/script:/usr/local/sbin:/usr/sbin:/sbin:/usr/local/bin:/usr/bin:/bin
 # --
 USER=$(whoami)
 MYNAME=$(basename $0)
 MYSELF=$(readlink -f $0)
 RUNID=$(date +%Y%m%d%H%M%S)-$$
 MYPID=$$
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Read in config file
-. $MYSELF/.config
+. $DIR/.config
 
 MAILER=mail
 SQLITE=sqlite3
@@ -3607,7 +3608,7 @@ f_setup() {
 		select DB_OPT in DOWNLOAD NEW ; do
 			if [[ "$DB_OPT" == "DOWNLOAD" ]] ; then
 				# Sample DB with pre-loaded game types.
-				SQLDB_DOWNLOAD_URL="http://pastebin.com/download.php?i=eMKUsADN" # DB file source.
+				SQLDB_DOWNLOAD_URL="https://raw.githubusercontent.com/riemers/wrench/master/wrench.db" # DB file source.
 				echo ""
 				echo "Downloading and installing database: "
 				wget --timeout=30 --tries=3 -O "$SQLDBFILE.tmp" "$SQLDB_DOWNLOAD_URL" &> /dev/null ; X_SQLDB_DOWNLOAD=$?
