@@ -56,6 +56,7 @@ Server-specific commands:
   wrench stop MyTarget
   wrench stopnow MyTarget
   wrench restart MyTarget
+  wrench restartall
   wrench restartnow MyTarget
   wrench console MyTarget
   wrench status MyTarget|all
