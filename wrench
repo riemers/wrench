@@ -4738,7 +4738,7 @@ case "$IN_ARG" in
 		f_uninstall
 	;;
 	'showconfig')
-		f_allorone f_shownconfig || exit $?
+		f_allorone f_showconfig || exit $?
 	;;
     'rcon')
         f_allorone f_rcon $@ || exit $?
