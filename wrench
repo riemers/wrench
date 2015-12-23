@@ -2090,7 +2090,7 @@ f_configinstall() {
 				echo ""
 				echo "Invalid input detected. Try again."
 			else
-				LIST_PORTS=$($SQLCMD "select hostport from inst;")
+			    LIST_PORTS=$($SQLCMD "select hostport from inst WHERE NOT INSTALLID='$IN_INSTALLID';")
 				HP_BAD=0
 				for EACH_PORT in $LIST_PORTS ; do
 					if [[ "$IN_HOSTPORT" == @($EACH_PORT|$[$EACH_PORT+1]|$[$EACH_PORT+2]|$[$EACH_PORT+3]) ]] ; then
