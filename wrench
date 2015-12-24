@@ -4141,6 +4141,7 @@ f_mailnotify() {
 	fi
 	# Only send mail if MAILNOTIFY is set.
 	if [[ "$MAILNOTIFY" == 1 ]] ; then
+		if ! [[ -n "$MESSAGEDOWN" ]] ; then
 		$MAILER -s "$MAIL_SUBJ_PREFIX $INSTALLID $MAIL_TOPIC " $MAILTO <<-ENDMESSAGE
 			
 			Date: $(date)
@@ -4149,6 +4150,7 @@ f_mailnotify() {
 			Message: $MAIL_MESSAGE
 
 		ENDMESSAGE
+		fi
 	fi
 
     if [[ "$HIPCHATNOTIFY" == 1 ]] ; then
